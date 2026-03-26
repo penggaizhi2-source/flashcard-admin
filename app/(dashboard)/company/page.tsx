@@ -156,8 +156,8 @@ export default function CompanyPage() {
         body: JSON.stringify({ id: companyId, inviteCode: newCode }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      // 重新 GET 确认 DB 里的真实值
-      const confirmed = await fetch('/api/company').then(r => r.json());
+      // 重新 GET 确认 DB 里的真实值（加时间戳绕过浏览器缓存）
+      const confirmed = await fetch(`/api/company?t=${Date.now()}`).then(r => r.json());
       if (confirmed.inviteCode !== newCode) {
         throw new Error(`DB 返回值不匹配：期望 ${newCode}，实际 ${confirmed.inviteCode}`);
       }

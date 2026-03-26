@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDB } from '../../../lib/cloudbase-server';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const db = getDB();
