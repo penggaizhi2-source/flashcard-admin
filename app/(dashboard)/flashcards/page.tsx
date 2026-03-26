@@ -318,6 +318,17 @@ export default function FlashcardsPage() {
         assignedCount: 0,
         createdAt: new Date().toLocaleDateString('zh-CN'),
       }, ...prev]);
+    } else if (formTarget) {
+      await fetch(`/api/flashcards/${formTarget.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      setCards((prev) => prev.map((c) =>
+        c.id === formTarget.id
+          ? { ...c, title: data.title, description: data.description, steps: data.steps }
+          : c
+      ));
     }
     setFormTarget(null);
   }
