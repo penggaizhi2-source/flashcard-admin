@@ -1,6 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDB } from '../../../lib/cloudbase-server';
 
+function dbStepsToUI(dbSteps: any[]) {
+  return (dbSteps ?? []).map((s: any) => ({
+    id: String(s.stepNo),
+    text: s.title ?? s.instruction ?? '',
+    requiresMedia: !!s.requiresMedia,
+    content: s.content && s.content.length > 0
+      ? s.content
+      : [{ type: 'text', value: s.title ?? s.instruction ?? '' }],
+  }));
+}
+
 export async function GET() {
   try {
     const db = getDB();
@@ -17,11 +28,7 @@ export async function GET() {
       id: fc._id,
       title: fc.title ?? '',
       description: fc.description ?? '',
-      steps: (fc.steps ?? []).map((s: any) => ({
-        id: String(s.stepNo),
-        text: s.title ?? s.instruction ?? '',
-        requiresMedia: !!s.requiresMedia,
-      })),
+      steps: dbStepsToUI(fc.steps),
       createdAt: fc.createdAt ? new Date(fc.createdAt).toLocaleDateString('zh-CN') : '-',
     }));
 
@@ -46,21 +53,19 @@ export async function POST(req: NextRequest) {
     if (!compRes.data?.length) return NextResponse.json({ error: 'no company' }, { status: 400 });
     const companyId = compRes.data[0]._id;
 
-    const dbSteps = steps.map((s: any, i: number) => ({
-      stepNo: i + 1,
-      title: s.text,
-      instruction: s.text,
-      requiresMedia: !!s.requiresMedia,
-    }));
+    const dbSteps = steps.map((s: any, i: number) => {
+      const firstText = (s.content ?? []).find((b: any) => b.type === 'text')?.value ?? s.text ?? '';
+      return {
+        stepNo: i + 1,
+        title: firstText,
+        instruction: firstText,
+        requiresMedia: !!s.requiresMedia,
+        content: s.content ?? [{ type: 'text', value: s.text ?? '' }],
+      };
+    });
 
     const res = await db.collection('flashcards').add({
-      data: {
-        companyId,
-        title,
-        description,
-        steps: dbSteps,
-        createdAt: db.serverDate(),
-      },
+      data: { companyId, title, description, steps: dbSteps, createdAt: db.serverDate() },
     });
 
     return NextResponse.json({ id: (res as any).id });

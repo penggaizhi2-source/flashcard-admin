@@ -148,13 +148,27 @@ export default function CompanyPage() {
   async function refreshCode() {
     if (!companyId) return;
     const newCode = randomCode();
-    await fetch('/api/company', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: companyId, inviteCode: newCode }),
-    });
-    setInviteCode(newCode);
-    setShowQR(false);
+    setSaving(true);
+    try {
+      const res = await fetch('/api/company', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: companyId, inviteCode: newCode }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // 重新 GET 确认 DB 里的真实值
+      const confirmed = await fetch('/api/company').then(r => r.json());
+      if (confirmed.inviteCode !== newCode) {
+        throw new Error(`DB 返回值不匹配：期望 ${newCode}，实际 ${confirmed.inviteCode}`);
+      }
+      setInviteCode(newCode);
+      setShowQR(false);
+    } catch (err) {
+      console.error('[company] 刷新邀请码失败', err);
+      alert(`邀请码更新失败，请重试。\n错误：${err}`);
+    } finally {
+      setSaving(false);
+    }
   }
 
   function copyCode() {
