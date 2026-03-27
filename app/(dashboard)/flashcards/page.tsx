@@ -273,10 +273,16 @@ function FormModal({
 
   async function handleSave() {
     if (!title.trim()) { setError('请填写闪卡标题'); return; }
-    const hasEmptyStep = steps.some((s) => s.content.length === 0 || s.content.every((b) => b.type === 'text' && !(b as any).value?.trim()));
-    if (hasEmptyStep) { setError('步骤内容不能为空'); return; }
+    // 空步骤自动填入占位文字，不再阻止保存
+    const filledSteps = steps.map((s, i) => {
+      const allEmpty = s.content.length === 0 || s.content.every((b) => b.type === 'text' && !(b as any).value?.trim());
+      if (allEmpty) {
+        return { ...s, content: [{ type: 'text' as const, value: `步骤 ${i + 1}` }] };
+      }
+      return s;
+    });
     setSaving(true);
-    try { await onSave({ title: title.trim(), description: description.trim(), steps }); } finally { setSaving(false); }
+    try { await onSave({ title: title.trim(), description: description.trim(), steps: filledSteps }); } finally { setSaving(false); }
   }
 
   return (
