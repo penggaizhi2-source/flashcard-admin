@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDB } from '../../../lib/cloudbase-server';
 
+export const dynamic = 'force-dynamic';
+
 function dbStepsToUI(dbSteps: any[]) {
   return (dbSteps ?? []).map((s: any) => ({
     id: String(s.stepNo),
