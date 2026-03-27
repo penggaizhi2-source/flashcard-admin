@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { Plus, Send, Trash2, X, GripVertical, Camera, Users, FileText, Image, Video, Mic, Loader2 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -406,6 +407,7 @@ function DeleteConfirm({ title, onConfirm, onClose }: { title: string; onConfirm
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function FlashcardsPage() {
+  const router = useRouter();
   const [cards, setCards]       = useState<Flashcard[]>([]);
   const [workers, setWorkers]   = useState<Worker[]>([]);
   const [loading, setLoading]   = useState(true);
@@ -419,7 +421,8 @@ export default function FlashcardsPage() {
   async function loadData() {
     setLoading(true);
     try {
-      const data = await fetch('/api/flashcards').then((r) => r.json());
+      // cache: 'no-store' 确保每次都从服务器拉取，不使用浏览器或 Next.js 缓存
+      const data = await fetch('/api/flashcards', { cache: 'no-store' }).then((r) => r.json());
       setCards(data.flashcards ?? []);
       setWorkers(data.workers ?? []);
     } catch (err) {
@@ -436,16 +439,25 @@ export default function FlashcardsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       }).then((r) => r.json());
-      setCards((prev) => [{ id: res.id, ...data, assignedCount: 0, createdAt: new Date().toLocaleDateString('zh-CN') }, ...prev]);
+      if (!res.id) {
+        alert('保存失败，请重试');
+        return;
+      }
+      setFormTarget(null);
+      // 重新从 DB 拉取，确保数据一致；同时清除 Next.js 路由缓存
+      router.refresh();
+      await loadData();
     } else if (formTarget) {
-      await fetch(`/api/flashcards/${formTarget.id}`, {
+      const res = await fetch(`/api/flashcards/${formTarget.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       });
-      setCards((prev) => prev.map((c) => c.id === formTarget.id ? { ...c, ...data } : c));
+      if (!res.ok) { alert('保存失败，请重试'); return; }
+      setFormTarget(null);
+      router.refresh();
+      await loadData();
     }
-    setFormTarget(null);
   }
 
   async function handleAssign(workerIds: string[]) {
@@ -455,15 +467,20 @@ export default function FlashcardsPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ flashcardId: assignTarget.id, workerIds }),
     }).then((r) => r.json());
-    setCards((prev) => prev.map((c) => c.id === assignTarget.id ? { ...c, assignedCount: c.assignedCount + (res.created ?? 0) } : c));
     setAssignTarget(null);
+    router.refresh();
+    await loadData();
+    if (res.created > 0) {
+      // assignedCount 已由 loadData 更新，无需手动 setCards
+    }
   }
 
   async function handleDelete() {
     if (!deleteTarget) return;
     await fetch(`/api/flashcards/${deleteTarget.id}`, { method: 'DELETE' });
-    setCards((prev) => prev.filter((c) => c.id !== deleteTarget.id));
     setDeleteTarget(null);
+    router.refresh();
+    await loadData();
   }
 
   return (
