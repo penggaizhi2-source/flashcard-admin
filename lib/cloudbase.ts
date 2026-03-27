@@ -7,6 +7,16 @@
 
 const ENV_ID = 'cloudbase-2gm5mo164a60d2a8';
 
+export const MAX_VIDEO_SIZE_BYTES = 100 * 1024 * 1024;
+
+export type UploadableMediaType = 'image' | 'video' | 'audio';
+
+export type BrowserUploadResult = {
+  fileId: string;
+  tempUrl: string;
+  name: string;
+};
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _app: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -72,4 +82,54 @@ export async function batchGetTempURLs(
   } catch {
     return {};
   }
+}
+
+function getFileExtension(name: string) {
+  const ext = name.split('.').pop()?.trim().toLowerCase();
+  return ext ? ext.replace(/[^a-z0-9]/g, '') || 'bin' : 'bin';
+}
+
+export function validateMediaFile(type: UploadableMediaType, file: File) {
+  if (type === 'video' && file.size > MAX_VIDEO_SIZE_BYTES) {
+    throw new Error('视频超过 100MB，请压缩后再上传');
+  }
+}
+
+export async function uploadMediaFile(
+  type: UploadableMediaType,
+  file: File,
+  onUploadProgress?: (progress: number) => void
+): Promise<BrowserUploadResult> {
+  validateMediaFile(type, file);
+
+  const app = await getApp();
+  const ext = getFileExtension(file.name);
+  const uid = Math.random().toString(36).slice(2, 12);
+  const cloudPath = `flashcard-content/${type}/${uid}.${ext}`;
+
+  const result = await app.uploadFile({
+    cloudPath,
+    filePath: file as unknown as string,
+    onUploadProgress: (event: { loaded?: number; total?: number; progress?: number }) => {
+      if (typeof event?.progress === 'number') {
+        onUploadProgress?.(Math.round(event.progress));
+        return;
+      }
+      if (typeof event?.loaded === 'number' && typeof event?.total === 'number' && event.total > 0) {
+        onUploadProgress?.(Math.round((event.loaded / event.total) * 100));
+      }
+    },
+  });
+
+  const fileId = result.fileID ?? result.fileId;
+  if (!fileId) {
+    throw new Error('上传失败，请重试');
+  }
+
+  const tempUrl = await getTempFileURL(fileId);
+  return {
+    fileId,
+    tempUrl,
+    name: file.name,
+  };
 }

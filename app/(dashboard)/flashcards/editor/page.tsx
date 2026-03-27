@@ -2,13 +2,14 @@
 
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ArrowLeft, Image as ImageIcon, Link2, Loader2, Mic, Plus, Type, Video } from 'lucide-react';
+import { ArrowLeft, Expand, Image as ImageIcon, Link2, Loader2, Mic, Pause, Play, Plus, Type, Video, X } from 'lucide-react';
 import {
   DEFAULT_LAYOUT_META,
   normalizeLayoutMeta,
   normalizeLayoutMode,
   type FlashcardLayoutMeta,
 } from '../../../../lib/flashcard-layout';
+import { uploadMediaFile, type UploadableMediaType } from '../../../../lib/cloudbase';
 
 type CanvasBlockType = 'text' | 'image' | 'video' | 'audio' | 'link';
 
@@ -32,6 +33,19 @@ type CanvasStep = {
   requiresMedia: boolean;
   blocks: CanvasBlock[];
 };
+
+type UploadState = {
+  type: UploadableMediaType;
+  fileName: string;
+  progress: number;
+  status: 'uploading' | 'error';
+  error?: string;
+} | null;
+
+type VideoOverlayState = {
+  blockId: string;
+  url: string;
+} | null;
 
 const DEFAULT_SIZES: Record<CanvasBlockType, { w: number; h: number; x: number; y: number }> = {
   text: { w: 88, h: 16, x: 6, y: 6 },
@@ -153,6 +167,40 @@ function getShellPercents(layoutMeta: FlashcardLayoutMeta) {
   };
 }
 
+function VideoOverlay({ url, onClose }: { url: string; onClose: () => void }) {
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') onClose();
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(2, 6, 23, 0.92)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}
+      onClick={onClose}
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        style={{ position: 'absolute', top: 20, right: 20, width: 40, height: 40, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(15, 23, 42, 0.6)', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      >
+        <X size={18} />
+      </button>
+      <video
+        src={url}
+        autoPlay
+        controls
+        playsInline
+        style={{ maxWidth: '100%', maxHeight: '100%', borderRadius: 18, background: '#000', boxShadow: '0 24px 80px rgba(0, 0, 0, 0.4)' }}
+        onClick={(event) => event.stopPropagation()}
+      />
+    </div>
+  );
+}
+
 function CanvasElement({
   block,
   selected,
@@ -163,6 +211,7 @@ function CanvasElement({
   onDelete,
   onStartEdit,
   onEndEdit,
+  onOpenVideo,
 }: {
   block: CanvasBlock;
   selected: boolean;
@@ -173,13 +222,40 @@ function CanvasElement({
   onDelete: () => void;
   onStartEdit: () => void;
   onEndEdit: () => void;
+  onOpenVideo?: (blockId: string, url: string) => void;
 }) {
   const dragStart = useRef<{ mx: number; my: number; x: number; y: number } | null>(null);
   const resizeStart = useRef<{ mx: number; my: number; w: number; h: number } | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [isVideoPlaying, setIsVideoPlaying] = useState(false);
 
   function getRect() {
     return canvasRef.current?.getBoundingClientRect() ?? { width: 320, height: 480 };
   }
+
+  useEffect(() => {
+    if (block.type !== 'video') return;
+    const element = videoRef.current;
+    if (!element) return;
+
+    function syncPlayingState() {
+      const current = videoRef.current;
+      if (!current) return;
+      setIsVideoPlaying(!current.paused && !current.ended);
+    }
+
+    syncPlayingState();
+    element.addEventListener('play', syncPlayingState);
+    element.addEventListener('pause', syncPlayingState);
+    element.addEventListener('ended', syncPlayingState);
+
+    return () => {
+      element.pause();
+      element.removeEventListener('play', syncPlayingState);
+      element.removeEventListener('pause', syncPlayingState);
+      element.removeEventListener('ended', syncPlayingState);
+    };
+  }, [block.id, block.tempUrl, block.type]);
 
   function handleMoveStart(e: React.MouseEvent) {
     if ((e.target as HTMLElement).closest('[data-resize]')) return;
@@ -236,6 +312,29 @@ function CanvasElement({
     document.addEventListener('mouseup', handleUp);
   }
 
+  async function handleToggleVideoPlayback(event: React.MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    const element = videoRef.current;
+    if (!element) return;
+
+    try {
+      if (element.paused) {
+        await element.play();
+      } else {
+        element.pause();
+      }
+    } catch (playbackError) {
+      console.error('[editor] preview video playback failed', playbackError);
+    }
+  }
+
+  function handleExpandVideo(event: React.MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    const element = videoRef.current;
+    if (element) element.pause();
+    if (block.tempUrl) onOpenVideo?.(block.id, block.tempUrl);
+  }
+
   return (
     <div
       style={{
@@ -288,7 +387,32 @@ function CanvasElement({
         )}
         {block.type === 'video' && (
           block.tempUrl ? (
-            <video src={block.tempUrl} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', borderRadius: 12 }} muted />
+            <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+              <video ref={videoRef} src={block.tempUrl} playsInline preload="metadata" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', borderRadius: 12, background: '#020617' }} />
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', padding: 10, background: 'linear-gradient(180deg, rgba(2,6,23,0.08) 0%, rgba(2,6,23,0.42) 100%)', pointerEvents: 'none' }}>
+                <div style={{ display: 'flex', gap: 8, pointerEvents: 'auto' }}>
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onClick={handleToggleVideoPlayback}
+                    style={{ width: 34, height: 34, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.2)', background: 'rgba(15, 23, 42, 0.58)', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    {isVideoPlaying ? <Pause size={15} /> : <Play size={15} style={{ marginLeft: 1 }} />}
+                  </button>
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onClick={handleExpandVideo}
+                    style={{ width: 34, height: 34, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.2)', background: 'rgba(15, 23, 42, 0.58)', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    <Expand size={15} />
+                  </button>
+                </div>
+                <div style={{ color: 'rgba(255,255,255,0.92)', fontSize: 10, fontWeight: 700, maxWidth: '58%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {block.name ?? '视频'}
+                </div>
+              </div>
+            </div>
           ) : (
             <div style={{ width: '100%', height: '100%', borderRadius: 12, background: '#1F2937', color: 'rgba(255,255,255,0.86)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 13, fontWeight: 600 }}><Video size={18} />视频</div>
           )
@@ -349,6 +473,7 @@ function CardShell({
   onDeleteBlock,
   onStartEdit,
   onEndEdit,
+  onOpenVideo,
   readOnly,
 }: {
   layoutMeta: FlashcardLayoutMeta;
@@ -364,6 +489,7 @@ function CardShell({
   onDeleteBlock?: (id: string) => void;
   onStartEdit?: (id: string) => void;
   onEndEdit?: () => void;
+  onOpenVideo?: (blockId: string, url: string) => void;
   readOnly?: boolean;
 }) {
   const shell = getShellPercents(layoutMeta);
@@ -396,6 +522,7 @@ function CardShell({
                 onDelete={() => onDeleteBlock?.(block.id)}
                 onStartEdit={() => onStartEdit?.(block.id)}
                 onEndEdit={() => onEndEdit?.()}
+                onOpenVideo={onOpenVideo}
               />
             );
           })}
@@ -478,7 +605,8 @@ function EditorInner() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(Boolean(editId));
   const [saving, setSaving] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const [uploadState, setUploadState] = useState<UploadState>(null);
+  const [videoOverlay, setVideoOverlay] = useState<VideoOverlayState>(null);
   const [error, setError] = useState('');
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
@@ -486,6 +614,7 @@ function EditorInner() {
   const canvasRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingType = useRef<'image' | 'video' | 'audio'>('image');
+  const pendingStepIndex = useRef(0);
   const activeStep = steps[Math.min(activeStepIdx, steps.length - 1)];
 
   useEffect(() => {
@@ -514,6 +643,14 @@ function EditorInner() {
   function updateActiveStep(updates: Partial<CanvasStep>) {
     const currentIndex = Math.min(activeStepIdx, steps.length - 1);
     setSteps((prev) => prev.map((step, index) => (index === currentIndex ? { ...step, ...updates } : step)));
+  }
+
+  function updateStepBlocks(stepIndex: number, updater: (blocks: CanvasBlock[]) => CanvasBlock[]) {
+    setSteps((prev) =>
+      prev.map((step, index) => (
+        index === stepIndex ? { ...step, blocks: updater(step.blocks ?? []) } : step
+      ))
+    );
   }
 
   function updateBlock(blockId: string, updates: Partial<CanvasBlock>) {
@@ -559,6 +696,7 @@ function EditorInner() {
     setError('');
     if (type === 'image' || type === 'video' || type === 'audio') {
       pendingType.current = type;
+      pendingStepIndex.current = Math.min(activeStepIdx, steps.length - 1);
       if (fileInputRef.current) {
         fileInputRef.current.accept = type === 'image' ? 'image/*' : type === 'video' ? 'video/*' : 'audio/*';
         fileInputRef.current.click();
@@ -576,28 +714,39 @@ function EditorInner() {
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = '';
-    setUploading(true);
     setError('');
+    const type = pendingType.current;
+    const targetStepIndex = pendingStepIndex.current;
+    setUploadState({ type, fileName: file.name, progress: 0, status: 'uploading' });
+
+    if (type === 'video' && file.size > 100 * 1024 * 1024) {
+      const message = '视频超过 100MB，请压缩后再上传';
+      setError(message);
+      setUploadState({ type, fileName: file.name, progress: 0, status: 'error', error: message });
+      return;
+    }
 
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const result = await fetch('/api/upload', { method: 'POST', body: formData }).then((res) => res.json());
+      const result = await uploadMediaFile(type, file, (progress) => {
+        setUploadState((current) => (current && current.status === 'uploading' ? { ...current, progress } : current));
+      });
       if (!result.fileId) {
         setError('文件上传失败，请重试。');
         return;
       }
 
-      const type = pendingType.current;
-      const block = clampBlock({ id: uid(), type, ...DEFAULT_SIZES[type], fileId: result.fileId, name: file.name, tempUrl: URL.createObjectURL(file) });
-      updateActiveStep({ blocks: [...(activeStep?.blocks ?? []), block] });
-      setSelectedId(block.id);
-      setEditingId(null);
+      const block = clampBlock({ id: uid(), type, ...DEFAULT_SIZES[type], fileId: result.fileId, name: result.name, tempUrl: result.tempUrl });
+      updateStepBlocks(targetStepIndex, (blocks) => [...blocks, block]);
+      if (activeStepIdx === targetStepIndex) {
+        setSelectedId(block.id);
+        setEditingId(null);
+      }
+      setUploadState(null);
     } catch (uploadError) {
       console.error('[editor] upload failed', uploadError);
       setError('文件上传失败，请检查网络后重试。');
-    } finally {
-      setUploading(false);
+      const message = uploadError instanceof Error ? uploadError.message : '文件上传失败，请检查网络后重试';
+      setUploadState({ type, fileName: file.name, progress: 0, status: 'error', error: uploadError instanceof Error ? uploadError.message : '文件上传失败，请检查网络后重试' });
     }
   }
 
@@ -672,6 +821,8 @@ function EditorInner() {
     { type: 'audio' as const, label: '音频', icon: <Mic size={18} />, color: '#DC2626' },
     { type: 'link' as const, label: '链接', icon: <Link2 size={18} />, color: '#059669' },
   ];
+  const isUploading = uploadState?.status === 'uploading';
+  const uploading = false;
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 100, display: 'flex', flexDirection: 'column', background: '#F1F5F9', overflow: 'hidden' }}>
@@ -694,13 +845,14 @@ function EditorInner() {
         </div>
         <div style={{ flex: 1, padding: 28, background: SHELL_COLORS.background, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }} onClick={() => { setSelectedId(null); setEditingId(null); }}>
           <div style={{ height: '100%', maxHeight: '100%', maxWidth: '100%' }}>
-            <CardShell layoutMeta={layoutMeta} stepIndex={activeStepIdx} totalSteps={steps.length} requiresMedia={Boolean(activeStep?.requiresMedia)} blocks={activeStep?.blocks ?? []} canvasRef={canvasRef} selectedId={selectedId} editingId={editingId} onSelectBlock={(id) => { setSelectedId(id); if (editingId !== id) setEditingId(null); }} onUpdateBlock={updateBlock} onDeleteBlock={deleteBlock} onStartEdit={setEditingId} onEndEdit={() => setEditingId(null)} />
+            <CardShell layoutMeta={layoutMeta} stepIndex={activeStepIdx} totalSteps={steps.length} requiresMedia={Boolean(activeStep?.requiresMedia)} blocks={activeStep?.blocks ?? []} canvasRef={canvasRef} selectedId={selectedId} editingId={editingId} onSelectBlock={(id) => { setSelectedId(id); if (editingId !== id) setEditingId(null); }} onUpdateBlock={updateBlock} onDeleteBlock={deleteBlock} onStartEdit={setEditingId} onEndEdit={() => setEditingId(null)} onOpenVideo={(blockId, url) => setVideoOverlay({ blockId, url })} />
           </div>
         </div>
         <div style={{ width: 112, background: '#fff', borderLeft: '1px solid #E5E7EB', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '14px 10px', flexShrink: 0 }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: '#94A3B8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>元素</div>
-          {toolbarItems.map((item) => <button key={item.type} type="button" onClick={() => addBlock(item.type)} disabled={uploading} style={{ width: '100%', height: 66, borderRadius: 12, border: '1px solid #E5E7EB', background: '#F8FAFC', color: item.color, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: uploading ? 'not-allowed' : 'pointer', opacity: uploading ? 0.5 : 1 }}>{item.icon}<span style={{ fontSize: 11, fontWeight: 700 }}>{item.label}</span></button>)}
+          {toolbarItems.map((item) => <button key={item.type} type="button" onClick={() => addBlock(item.type)} disabled={isUploading} style={{ width: '100%', height: 66, borderRadius: 12, border: '1px solid #E5E7EB', background: '#F8FAFC', color: item.color, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: isUploading ? 'not-allowed' : 'pointer', opacity: isUploading ? 0.5 : 1 }}>{item.icon}<span style={{ fontSize: 11, fontWeight: 700 }}>{item.label}</span></button>)}
           {uploading && <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#64748B', fontSize: 11 }}><Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />上传中</div>}
+          {uploadState && <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 6, color: uploadState.status === 'error' ? '#B91C1C' : '#64748B', fontSize: 11, lineHeight: 1.5 }}>{uploadState.status === 'uploading' && <Loader2 size={12} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />}<div style={{ minWidth: 0, wordBreak: 'break-word' }}>{uploadState.status === 'uploading' ? `上传${uploadState.type === 'video' ? '视频' : uploadState.type === 'image' ? '图片' : '音频'} ${uploadState.progress}%` : uploadState.error}</div></div>}
           <div style={{ width: '100%', height: 1, background: '#F1F5F9' }} />
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 11, color: '#64748B', marginBottom: 6 }}>需留痕</div>
@@ -711,6 +863,7 @@ function EditorInner() {
         </div>
       </div>
       <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileChange} />
+      {videoOverlay && <VideoOverlay url={videoOverlay.url} onClose={() => setVideoOverlay(null)} />}
       <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
     </div>
   );
