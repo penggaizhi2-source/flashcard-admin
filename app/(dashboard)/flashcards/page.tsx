@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
 import { Plus, Send, Trash2, X, GripVertical, Camera, Users, FileText, Image, Video, Mic, Loader2 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -407,7 +406,6 @@ function DeleteConfirm({ title, onConfirm, onClose }: { title: string; onConfirm
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function FlashcardsPage() {
-  const router = useRouter();
   const [cards, setCards]       = useState<Flashcard[]>([]);
   const [workers, setWorkers]   = useState<Worker[]>([]);
   const [loading, setLoading]   = useState(true);
@@ -439,47 +437,36 @@ export default function FlashcardsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       }).then((r) => r.json());
-      if (!res.id) {
-        alert('保存失败，请重试');
-        return;
-      }
+      if (!res.id) { alert('保存失败，请重试'); return; }
       setFormTarget(null);
-      // 重新从 DB 拉取，确保数据一致；同时清除 Next.js 路由缓存
-      router.refresh();
       await loadData();
     } else if (formTarget) {
-      const res = await fetch(`/api/flashcards/${formTarget.id}`, {
+      const httpRes = await fetch(`/api/flashcards/${formTarget.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       });
-      if (!res.ok) { alert('保存失败，请重试'); return; }
+      if (!httpRes.ok) { alert('保存失败，请重试'); return; }
       setFormTarget(null);
-      router.refresh();
       await loadData();
     }
   }
 
   async function handleAssign(workerIds: string[]) {
     if (!assignTarget) return;
-    const res = await fetch('/api/assignments', {
+    await fetch('/api/assignments', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ flashcardId: assignTarget.id, workerIds }),
-    }).then((r) => r.json());
+    });
     setAssignTarget(null);
-    router.refresh();
     await loadData();
-    if (res.created > 0) {
-      // assignedCount 已由 loadData 更新，无需手动 setCards
-    }
   }
 
   async function handleDelete() {
     if (!deleteTarget) return;
     await fetch(`/api/flashcards/${deleteTarget.id}`, { method: 'DELETE' });
     setDeleteTarget(null);
-    router.refresh();
     await loadData();
   }
 
