@@ -31,8 +31,16 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
   try {
     const { id } = await params;
     const db = getDB();
+
+    // 删除闪卡本体
     await db.collection('flashcards').doc(id).remove();
-    return NextResponse.json({ ok: true });
+
+    // 同步删除所有关联的 assignments
+    const assignRes = await db.collection('assignments').where({ flashcardId: id }).get();
+    const assignIds: string[] = ((assignRes as any).data ?? []).map((a: any) => a._id);
+    await Promise.all(assignIds.map((aid) => db.collection('assignments').doc(aid).remove()));
+
+    return NextResponse.json({ ok: true, removedAssignments: assignIds.length });
   } catch (err) {
     console.error('[api/flashcards DELETE]', err);
     return NextResponse.json({ error: 'failed' }, { status: 500 });

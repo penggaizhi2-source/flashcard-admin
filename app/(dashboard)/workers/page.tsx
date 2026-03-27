@@ -10,6 +10,7 @@ type Worker = {
   joinedAt: string;
   assignedCards: number;
   completedCards: number;
+  status?: string;
 };
 
 function DeleteConfirm({ name, onConfirm, onClose }: { name: string; onConfirm: () => void; onClose: () => void }) {
@@ -44,6 +45,7 @@ function Avatar({ name, avatarUrl }: { name: string; avatarUrl?: string }) {
 
 export default function WorkersPage() {
   const [workers, setWorkers] = useState<Worker[]>([]);
+  const [pendingWorkers, setPendingWorkers] = useState<Worker[]>([]);
   const [inviteCode, setInviteCode] = useState('');
   const [companyId, setCompanyId] = useState('');
   const [copied, setCopied] = useState(false);
@@ -57,6 +59,7 @@ export default function WorkersPage() {
     try {
       const data = await fetch('/api/workers').then((r) => r.json());
       setWorkers(data.workers ?? []);
+      setPendingWorkers(data.pendingWorkers ?? []);
       setInviteCode(data.inviteCode ?? '');
       // companyId is needed for refreshCode; fetch from company endpoint
       const comp = await fetch('/api/company').then((r) => r.json());
@@ -102,6 +105,25 @@ export default function WorkersPage() {
     }
   }
 
+  async function handleApprove(worker: Worker) {
+    await fetch(`/api/workers/${worker.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'active' }),
+    });
+    setPendingWorkers((prev) => prev.filter((w) => w.id !== worker.id));
+    setWorkers((prev) => [...prev, { ...worker, status: 'active' }]);
+  }
+
+  async function handleReject(worker: Worker) {
+    await fetch(`/api/workers/${worker.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'removed' }),
+    });
+    setPendingWorkers((prev) => prev.filter((w) => w.id !== worker.id));
+  }
+
   const totalAssigned  = workers.reduce((s, w) => s + w.assignedCards, 0);
   const totalCompleted = workers.reduce((s, w) => s + w.completedCards, 0);
 
@@ -140,6 +162,33 @@ export default function WorkersPage() {
           </div>
         ))}
       </div>
+
+      {/* 待审批工人 */}
+      {pendingWorkers.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl overflow-hidden">
+          <div className="px-5 py-3 border-b border-amber-200 flex items-center gap-2">
+            <span className="text-sm font-semibold text-amber-800">待审批申请</span>
+            <span className="bg-amber-500 text-white text-xs font-bold px-2 py-0.5 rounded-full">{pendingWorkers.length}</span>
+          </div>
+          <div className="divide-y divide-amber-100">
+            {pendingWorkers.map((w) => (
+              <div key={w.id} className="px-5 py-3.5 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Avatar name={w.name} avatarUrl={w.avatarUrl} />
+                  <div>
+                    <p className="text-sm font-semibold text-gray-800">{w.name}</p>
+                    <p className="text-xs text-gray-400">申请时间：{w.joinedAt}</p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => handleReject(w)} className="h-8 px-3 rounded-lg border border-red-200 text-xs font-medium text-red-500 hover:bg-red-50 transition">拒绝</button>
+                  <button onClick={() => handleApprove(w)} className="h-8 px-3 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-semibold transition">批准</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-8 flex justify-center">
