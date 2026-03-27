@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { Plus, Send, Trash2, X, GripVertical, Camera, Users, FileText, Image, Video, Mic, Loader2 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -412,11 +413,11 @@ function DeleteConfirm({ title, onConfirm, onClose }: { title: string; onConfirm
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function FlashcardsPage() {
+  const router = useRouter();
   const [cards, setCards]       = useState<Flashcard[]>([]);
   const [workers, setWorkers]   = useState<Worker[]>([]);
   const [loading, setLoading]   = useState(true);
 
-  const [formTarget, setFormTarget]     = useState<Flashcard | null | 'new'>(null);
   const [assignTarget, setAssignTarget] = useState<Flashcard | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Flashcard | null>(null);
 
@@ -433,28 +434,6 @@ export default function FlashcardsPage() {
       console.error('[flashcards]', err);
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function handleSave(data: Pick<Flashcard, 'title' | 'description' | 'steps'>) {
-    if (formTarget === 'new') {
-      const res = await fetch('/api/flashcards', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      }).then((r) => r.json());
-      if (!res.id) { alert('保存失败，请重试'); return; }
-      setFormTarget(null);
-      await loadData();
-    } else if (formTarget) {
-      const httpRes = await fetch(`/api/flashcards/${formTarget.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-      if (!httpRes.ok) { alert('保存失败，请重试'); return; }
-      setFormTarget(null);
-      await loadData();
     }
   }
 
@@ -483,7 +462,7 @@ export default function FlashcardsPage() {
           <h1 className="text-xl font-bold text-gray-900">闪卡管理</h1>
           <p className="text-sm text-gray-400 mt-0.5">共 {cards.length} 张闪卡</p>
         </div>
-        <button onClick={() => setFormTarget('new')}
+        <button onClick={() => router.push('/flashcards/editor')}
           className="flex items-center gap-1.5 h-9 px-4 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition">
           <Plus size={15} /> 新建闪卡
         </button>
@@ -527,7 +506,7 @@ export default function FlashcardsPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0 mt-0.5">
-                  <button onClick={() => setFormTarget(card)} className="h-8 px-3 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 transition">编辑</button>
+                  <button onClick={() => router.push('/flashcards/editor?id=' + card.id)} className="h-8 px-3 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 transition">编辑</button>
                   <button onClick={() => setAssignTarget(card)} className="h-8 px-3 rounded-lg text-xs font-medium text-blue-600 hover:bg-blue-50 transition">
                     <Send size={13} className="inline mr-1" />下发
                   </button>
@@ -541,7 +520,6 @@ export default function FlashcardsPage() {
         </div>
       )}
 
-      {formTarget !== null && <FormModal initial={formTarget === 'new' ? null : formTarget} onSave={handleSave} onClose={() => setFormTarget(null)} />}
       {assignTarget && <AssignModal card={assignTarget} workers={workers} onSave={handleAssign} onClose={() => setAssignTarget(null)} />}
       {deleteTarget && <DeleteConfirm title={deleteTarget.title} onConfirm={handleDelete} onClose={() => setDeleteTarget(null)} />}
     </div>

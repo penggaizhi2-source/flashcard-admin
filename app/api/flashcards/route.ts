@@ -66,7 +66,8 @@ export async function POST(req: NextRequest) {
         title: firstText,
         instruction: firstText,
         requiresMedia: !!s.requiresMedia,
-        content: s.content ?? [{ type: 'text', value: s.text ?? '' }],
+        // Preserve all block fields including x,y,w,h,id for PPT editor
+        content: (s.content ?? [{ type: 'text', value: s.text ?? '' }]).map(({ tempUrl: _t, ...b }: any) => b),
       };
     });
 

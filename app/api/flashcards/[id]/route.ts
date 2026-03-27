@@ -1,6 +1,40 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDB } from '../../../../lib/cloudbase-server';
 
+export const dynamic = 'force-dynamic';
+
+function dbStepsToUI(dbSteps: any[]) {
+  return (dbSteps ?? []).map((s: any) => ({
+    id: String(s.stepNo),
+    text: s.title ?? s.instruction ?? '',
+    requiresMedia: !!s.requiresMedia,
+    content: s.content && s.content.length > 0
+      ? s.content
+      : [{ type: 'text', value: s.title ?? s.instruction ?? '' }],
+  }));
+}
+
+export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params;
+    const db = getDB();
+    const res = await (db.collection('flashcards').doc(id) as any).get();
+    const fc = Array.isArray(res.data) ? res.data[0] : res.data;
+    if (!fc) return NextResponse.json({ error: 'not found' }, { status: 404 });
+    return NextResponse.json({
+      flashcard: {
+        id: fc._id,
+        title: fc.title ?? '',
+        description: fc.description ?? '',
+        steps: dbStepsToUI(fc.steps),
+      },
+    });
+  } catch (err) {
+    console.error('[api/flashcards GET by id]', err);
+    return NextResponse.json({ error: 'failed' }, { status: 500 });
+  }
+}
+
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
@@ -14,7 +48,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         title: firstText,
         instruction: firstText,
         requiresMedia: !!s.requiresMedia,
-        content: s.content ?? [{ type: 'text', value: s.text ?? '' }],
+        // Preserve all block fields including x,y,w,h,id for PPT editor
+        content: (s.content ?? [{ type: 'text', value: s.text ?? '' }]).map(({ tempUrl: _t, ...b }: any) => b),
       };
     });
 
