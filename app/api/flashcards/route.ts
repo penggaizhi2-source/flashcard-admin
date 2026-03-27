@@ -19,10 +19,13 @@ export async function GET() {
     if (!compRes.data?.length) return NextResponse.json({ flashcards: [], workers: [] });
     const companyId = compRes.data[0]._id;
 
-    const [fcRes, workerRes] = await Promise.all([
+    const [fcRes, workerRes, assignRes] = await Promise.all([
       db.collection('flashcards').where({ companyId }).orderBy('createdAt', 'desc').get(),
       db.collection('workers').where({ companyId, status: 'active' }).get(),
+      db.collection('assignments').where({ companyId }).limit(500).get(),
     ]);
+
+    const assignments: any[] = assignRes.data ?? [];
 
     const flashcards = (fcRes.data ?? []).map((fc: any) => ({
       id: fc._id,
@@ -30,6 +33,7 @@ export async function GET() {
       description: fc.description ?? '',
       steps: dbStepsToUI(fc.steps),
       createdAt: fc.createdAt ? new Date(fc.createdAt).toLocaleDateString('zh-CN') : '-',
+      assignedCount: assignments.filter((a) => a.flashcardId === fc._id).length,
     }));
 
     const workers = (workerRes.data ?? []).map((w: any) => ({
