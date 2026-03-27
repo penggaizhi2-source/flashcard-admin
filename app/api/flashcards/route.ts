@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDB } from '../../../lib/cloudbase-server';
+import {
+  DEFAULT_LAYOUT_META,
+  DEFAULT_LAYOUT_MODE,
+  normalizeLayoutMeta,
+  normalizeLayoutMode,
+} from '../../../lib/flashcard-layout';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,6 +18,20 @@ function dbStepsToUI(dbSteps: any[]) {
       ? s.content
       : [{ type: 'text', value: s.title ?? s.instruction ?? '' }],
   }));
+}
+
+function dbFlashcardToUI(fc: any, assignedCount = 0) {
+  const layoutMode = normalizeLayoutMode(fc.layoutMode);
+  return {
+    id: fc._id,
+    title: fc.title ?? '',
+    description: fc.description ?? '',
+    layoutMode,
+    layoutMeta: layoutMode === 'mobile-canvas' ? normalizeLayoutMeta(fc.layoutMeta) : DEFAULT_LAYOUT_META,
+    steps: dbStepsToUI(fc.steps),
+    createdAt: fc.createdAt ? new Date(fc.createdAt).toLocaleDateString('zh-CN') : '-',
+    assignedCount,
+  };
 }
 
 export async function GET() {
@@ -29,14 +49,9 @@ export async function GET() {
 
     const assignments: any[] = assignRes.data ?? [];
 
-    const flashcards = (fcRes.data ?? []).map((fc: any) => ({
-      id: fc._id,
-      title: fc.title ?? '',
-      description: fc.description ?? '',
-      steps: dbStepsToUI(fc.steps),
-      createdAt: fc.createdAt ? new Date(fc.createdAt).toLocaleDateString('zh-CN') : '-',
-      assignedCount: assignments.filter((a) => a.flashcardId === fc._id).length,
-    }));
+    const flashcards = (fcRes.data ?? []).map((fc: any) =>
+      dbFlashcardToUI(fc, assignments.filter((a) => a.flashcardId === fc._id).length)
+    );
 
     const workers = (workerRes.data ?? []).map((w: any) => ({
       id: w._id,
@@ -53,7 +68,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
-    const { title, description, steps } = await req.json();
+    const { title, description, steps, layoutMode, layoutMeta } = await req.json();
     const db = getDB();
     const compRes = await db.collection('companies').limit(1).get();
     if (!compRes.data?.length) return NextResponse.json({ error: 'no company' }, { status: 400 });
@@ -72,9 +87,19 @@ export async function POST(req: NextRequest) {
     });
 
     // @cloudbase/node-sdk 的 add() 直接传文档，不要 data: 包裹（那是 wx-server-sdk 的语法）
-    const res = await db.collection('flashcards').add(
-      { companyId, title, description, steps: dbSteps, createdAt: db.serverDate() }
-    );
+    const normalizedLayoutMode = normalizeLayoutMode(layoutMode ?? DEFAULT_LAYOUT_MODE);
+    const normalizedLayoutMeta =
+      normalizedLayoutMode === 'mobile-canvas' ? normalizeLayoutMeta(layoutMeta) : DEFAULT_LAYOUT_META;
+
+    const res = await db.collection('flashcards').add({
+      companyId,
+      title,
+      description,
+      layoutMode: normalizedLayoutMode,
+      layoutMeta: normalizedLayoutMeta,
+      steps: dbSteps,
+      createdAt: db.serverDate(),
+    });
 
     return NextResponse.json({ id: (res as any).id });
   } catch (err) {

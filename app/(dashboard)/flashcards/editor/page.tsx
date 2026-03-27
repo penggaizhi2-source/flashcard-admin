@@ -1,24 +1,30 @@
 'use client';
 
-import { useState, useEffect, useRef, Suspense } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ArrowLeft, Plus, Loader2 } from 'lucide-react';
+import { ArrowLeft, Image as ImageIcon, Link2, Loader2, Mic, Plus, Type, Video } from 'lucide-react';
+import {
+  DEFAULT_LAYOUT_META,
+  normalizeLayoutMeta,
+  normalizeLayoutMode,
+  type FlashcardLayoutMeta,
+} from '../../../../lib/flashcard-layout';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+type CanvasBlockType = 'text' | 'image' | 'video' | 'audio' | 'link';
 
 type CanvasBlock = {
   id: string;
-  type: 'text' | 'image' | 'video' | 'audio' | 'link';
-  x: number; // % of canvas width
-  y: number; // % of canvas height
-  w: number; // % of canvas width
-  h: number; // % of canvas height
+  type: CanvasBlockType;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
   value?: string;
   url?: string;
   title?: string;
   fileId?: string;
   name?: string;
-  tempUrl?: string; // local only, not saved
+  tempUrl?: string;
 };
 
 type CanvasStep = {
@@ -27,103 +33,230 @@ type CanvasStep = {
   blocks: CanvasBlock[];
 };
 
-const DEFAULT_SIZES: Record<string, { w: number; h: number; x: number; y: number }> = {
-  text:  { w: 40, h: 15, x: 30, y: 40 },
-  image: { w: 40, h: 40, x: 30, y: 20 },
-  video: { w: 50, h: 40, x: 25, y: 20 },
-  audio: { w: 40, h: 12, x: 30, y: 44 },
-  link:  { w: 40, h: 12, x: 30, y: 44 },
+const DEFAULT_SIZES: Record<CanvasBlockType, { w: number; h: number; x: number; y: number }> = {
+  text: { w: 88, h: 16, x: 6, y: 6 },
+  image: { w: 88, h: 28, x: 6, y: 26 },
+  video: { w: 88, h: 28, x: 6, y: 26 },
+  audio: { w: 88, h: 12, x: 6, y: 58 },
+  link: { w: 88, h: 12, x: 6, y: 58 },
 };
 
-function uid() { return Math.random().toString(36).slice(2, 10); }
+const SHELL_COLORS = {
+  background: '#E2E8F0',
+  card: '#FFFDFB',
+  border: '#E7DFD9',
+  contentBg: '#FFF8F2',
+  titleBar: '#C62828',
+  doneBar: '#2E7D32',
+  footerBg: '#FFF5EC',
+  footerBorder: '#EFE4DA',
+};
 
-// ─── Canvas Element ───────────────────────────────────────────────────────────
+function uid() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function blockHasCanvasRect(block: Partial<CanvasBlock>) {
+  return ['x', 'y', 'w', 'h'].every((key) => typeof block[key as keyof CanvasBlock] === 'number');
+}
+
+function estimateTextHeight(value: string | undefined) {
+  const text = (value ?? '').trim();
+  const lines = Math.max(1, Math.ceil(text.length / 22));
+  return clamp(10 + lines * 4, 14, 28);
+}
+
+function normalizeBlockType(type: unknown): CanvasBlockType {
+  return type === 'image' || type === 'video' || type === 'audio' || type === 'link' ? type : 'text';
+}
+
+function clampBlock(block: CanvasBlock): CanvasBlock {
+  const w = clamp(block.w, 10, 100);
+  const h = clamp(block.h, 8, 100);
+  return {
+    ...block,
+    w,
+    h,
+    x: clamp(block.x, 0, 100 - w),
+    y: clamp(block.y, 0, 100 - h),
+  };
+}
+
+function convertLegacyBlocksToCanvas(blocks: any[], fallbackText: string) {
+  const source = blocks.length > 0 ? blocks : [{ type: 'text', value: fallbackText }];
+  let cursorY = 6;
+
+  return source.map((raw, index) => {
+    const type = normalizeBlockType(raw?.type);
+    const base = DEFAULT_SIZES[type];
+    const next: CanvasBlock = {
+      id: raw?.id ?? uid(),
+      type,
+      x: base.x,
+      y: cursorY,
+      w: base.w,
+      h:
+        type === 'text'
+          ? estimateTextHeight(raw?.value ?? fallbackText)
+          : type === 'audio' || type === 'link'
+            ? 12
+            : 28,
+      value: raw?.value ?? (type === 'text' && index === 0 ? fallbackText : raw?.value),
+      url: raw?.url,
+      title: raw?.title,
+      fileId: raw?.fileId,
+      name: raw?.name,
+      tempUrl: raw?.tempUrl,
+    };
+
+    if (cursorY + next.h > 94) next.y = clamp(94 - next.h, 0, 94);
+    cursorY = clamp(next.y + next.h + 3, 6, 94);
+    return clampBlock(next);
+  });
+}
+
+function normalizeBlocksForEditor(blocks: any[], fallbackText: string, layoutMode: 'flow' | 'mobile-canvas') {
+  if (layoutMode !== 'mobile-canvas') return convertLegacyBlocksToCanvas(blocks, fallbackText);
+
+  return (blocks.length > 0 ? blocks : [{ type: 'text', value: fallbackText }]).map((raw) => {
+    const type = normalizeBlockType(raw?.type);
+    const base = DEFAULT_SIZES[type];
+    return clampBlock({
+      id: raw?.id ?? uid(),
+      type,
+      x: typeof raw?.x === 'number' ? raw.x : base.x,
+      y: typeof raw?.y === 'number' ? raw.y : base.y,
+      w: typeof raw?.w === 'number' ? raw.w : base.w,
+      h: typeof raw?.h === 'number' ? raw.h : type === 'text' ? estimateTextHeight(raw?.value) : base.h,
+      value: raw?.value,
+      url: raw?.url,
+      title: raw?.title,
+      fileId: raw?.fileId,
+      name: raw?.name,
+      tempUrl: raw?.tempUrl,
+    });
+  });
+}
+
+function getShellPercents(layoutMeta: FlashcardLayoutMeta) {
+  return {
+    contentLeft: `${(layoutMeta.contentArea.x / layoutMeta.card.width) * 100}%`,
+    contentTop: `${(layoutMeta.contentArea.y / layoutMeta.card.height) * 100}%`,
+    contentWidth: `${(layoutMeta.contentArea.width / layoutMeta.card.width) * 100}%`,
+    contentHeight: `${(layoutMeta.contentArea.height / layoutMeta.card.height) * 100}%`,
+    footerTop: `${((layoutMeta.contentArea.y + layoutMeta.contentArea.height + 18) / layoutMeta.card.height) * 100}%`,
+    footerHeight: `${((layoutMeta.card.height - (layoutMeta.contentArea.y + layoutMeta.contentArea.height + 18) - 28) / layoutMeta.card.height) * 100}%`,
+  };
+}
 
 function CanvasElement({
-  block, selected, editing,
+  block,
+  selected,
+  editing,
   canvasRef,
-  onSelect, onUpdate, onDelete, onStartEdit, onEndEdit,
+  onSelect,
+  onUpdate,
+  onDelete,
+  onStartEdit,
+  onEndEdit,
 }: {
   block: CanvasBlock;
   selected: boolean;
   editing: boolean;
   canvasRef: React.RefObject<HTMLDivElement | null>;
   onSelect: () => void;
-  onUpdate: (u: Partial<CanvasBlock>) => void;
+  onUpdate: (updates: Partial<CanvasBlock>) => void;
   onDelete: () => void;
   onStartEdit: () => void;
   onEndEdit: () => void;
 }) {
-  const dragStart = useRef<{ mx: number; my: number; bx: number; by: number } | null>(null);
-  const resizeStart = useRef<{ mx: number; my: number; bw: number; bh: number } | null>(null);
+  const dragStart = useRef<{ mx: number; my: number; x: number; y: number } | null>(null);
+  const resizeStart = useRef<{ mx: number; my: number; w: number; h: number } | null>(null);
 
   function getRect() {
-    return canvasRef.current?.getBoundingClientRect() ?? { width: 800, height: 500, left: 0, top: 0 };
+    return canvasRef.current?.getBoundingClientRect() ?? { width: 320, height: 480 };
   }
 
-  function onMouseDownMove(e: React.MouseEvent) {
+  function handleMoveStart(e: React.MouseEvent) {
     if ((e.target as HTMLElement).closest('[data-resize]')) return;
     if ((e.target as HTMLElement).tagName === 'TEXTAREA') return;
     if ((e.target as HTMLElement).tagName === 'INPUT') return;
     e.stopPropagation();
     onSelect();
-    const rect = getRect();
-    dragStart.current = { mx: e.clientX, my: e.clientY, bx: block.x, by: block.y };
 
-    function onMove(ev: MouseEvent) {
+    const rect = getRect();
+    dragStart.current = { mx: e.clientX, my: e.clientY, x: block.x, y: block.y };
+
+    function handleMove(ev: MouseEvent) {
       if (!dragStart.current) return;
       const dx = ((ev.clientX - dragStart.current.mx) / rect.width) * 100;
       const dy = ((ev.clientY - dragStart.current.my) / rect.height) * 100;
       onUpdate({
-        x: Math.max(0, Math.min(100 - block.w, dragStart.current.bx + dx)),
-        y: Math.max(0, Math.min(100 - block.h, dragStart.current.by + dy)),
+        x: clamp(dragStart.current.x + dx, 0, 100 - block.w),
+        y: clamp(dragStart.current.y + dy, 0, 100 - block.h),
       });
     }
-    function onUp() {
+
+    function handleUp() {
       dragStart.current = null;
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('mousemove', handleMove);
+      document.removeEventListener('mouseup', handleUp);
     }
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
+
+    document.addEventListener('mousemove', handleMove);
+    document.addEventListener('mouseup', handleUp);
   }
 
-  function onMouseDownResize(e: React.MouseEvent) {
+  function handleResizeStart(e: React.MouseEvent) {
     e.stopPropagation();
     const rect = getRect();
-    resizeStart.current = { mx: e.clientX, my: e.clientY, bw: block.w, bh: block.h };
-    function onMove(ev: MouseEvent) {
+    resizeStart.current = { mx: e.clientX, my: e.clientY, w: block.w, h: block.h };
+
+    function handleMove(ev: MouseEvent) {
       if (!resizeStart.current) return;
       const dx = ((ev.clientX - resizeStart.current.mx) / rect.width) * 100;
       const dy = ((ev.clientY - resizeStart.current.my) / rect.height) * 100;
-      onUpdate({ w: Math.max(10, resizeStart.current.bw + dx), h: Math.max(5, resizeStart.current.bh + dy) });
+      onUpdate({
+        w: clamp(resizeStart.current.w + dx, 10, 100 - block.x),
+        h: clamp(resizeStart.current.h + dy, 8, 100 - block.y),
+      });
     }
-    function onUp() {
+
+    function handleUp() {
       resizeStart.current = null;
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('mousemove', handleMove);
+      document.removeEventListener('mouseup', handleUp);
     }
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
+
+    document.addEventListener('mousemove', handleMove);
+    document.addEventListener('mouseup', handleUp);
   }
 
   return (
     <div
       style={{
         position: 'absolute',
-        left: `${block.x}%`, top: `${block.y}%`,
-        width: `${block.w}%`, height: `${block.h}%`,
+        left: `${block.x}%`,
+        top: `${block.y}%`,
+        width: `${block.w}%`,
+        height: `${block.h}%`,
+        borderRadius: 14,
+        border: selected ? '2px solid #2563EB' : '2px solid transparent',
         boxSizing: 'border-box',
-        border: selected ? '2px solid #2563eb' : '2px solid transparent',
-        borderRadius: 6,
         cursor: 'move',
         userSelect: 'none',
       }}
-      onMouseDown={onMouseDownMove}
-      onClick={(e) => { e.stopPropagation(); onSelect(); }}
+      onMouseDown={handleMoveStart}
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelect();
+      }}
     >
-      {/* Block content */}
-      <div style={{ width: '100%', height: '100%', overflow: 'hidden', borderRadius: 4 }}>
+      <div style={{ width: '100%', height: '100%', overflow: 'hidden', borderRadius: 12 }}>
         {block.type === 'text' && (
           editing ? (
             <textarea
@@ -131,130 +264,200 @@ function CanvasElement({
               value={block.value ?? ''}
               onChange={(e) => onUpdate({ value: e.target.value })}
               onBlur={onEndEdit}
-              style={{ width: '100%', height: '100%', border: 'none', outline: 'none', resize: 'none', background: 'rgba(255,255,255,0.95)', fontSize: 14, padding: 8, borderRadius: 4, cursor: 'text', fontFamily: 'inherit', lineHeight: 1.6 }}
+              style={{ width: '100%', height: '100%', resize: 'none', border: 'none', outline: 'none', padding: 12, borderRadius: 12, fontSize: 14, lineHeight: 1.6, background: 'rgba(255,255,255,0.95)', color: '#1F2937' }}
             />
           ) : (
             <div
-              onDoubleClick={(e) => { e.stopPropagation(); onStartEdit(); }}
-              style={{ width: '100%', height: '100%', padding: 8, fontSize: 14, lineHeight: 1.6, background: block.value ? 'rgba(255,255,255,0.88)' : 'rgba(255,255,255,0.4)', borderRadius: 4, wordBreak: 'break-word', whiteSpace: 'pre-wrap', overflow: 'hidden', cursor: 'move' }}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                onStartEdit();
+              }}
+              style={{ width: '100%', height: '100%', padding: 12, borderRadius: 12, background: 'rgba(255,255,255,0.96)', color: '#1F2937', fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflow: 'hidden', boxShadow: '0 6px 18px rgba(15, 23, 42, 0.08)' }}
             >
-              {block.value || <span style={{ color: '#bbb', fontStyle: 'italic' }}>双击编辑文字</span>}
+              {block.value || <span style={{ color: '#9CA3AF' }}>双击编辑文字</span>}
             </div>
           )
         )}
         {block.type === 'image' && (
           block.tempUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={block.tempUrl} alt={block.name} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 4, display: 'block' }} />
+            <img src={block.tempUrl} alt={block.name ?? 'image'} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', borderRadius: 12 }} />
           ) : (
-            <div style={{ width: '100%', height: '100%', background: '#EDE9FE', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 4, color: '#7C3AED', fontSize: 13, gap: 6 }}>
-              <span style={{ fontSize: 22 }}>🖼</span> 图片
-            </div>
+            <div style={{ width: '100%', height: '100%', borderRadius: 12, background: '#EDE9FE', color: '#6D28D9', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 13, fontWeight: 600 }}><ImageIcon size={18} />图片</div>
           )
         )}
         {block.type === 'video' && (
           block.tempUrl ? (
-            <video src={block.tempUrl} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 4, display: 'block' }} muted />
+            <video src={block.tempUrl} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', borderRadius: 12 }} muted />
           ) : (
-            <div style={{ width: '100%', height: '100%', background: '#1F2937', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 4, color: 'rgba(255,255,255,0.7)', fontSize: 13, gap: 6 }}>
-              <span style={{ fontSize: 22 }}>🎬</span> 视频
-            </div>
+            <div style={{ width: '100%', height: '100%', borderRadius: 12, background: '#1F2937', color: 'rgba(255,255,255,0.86)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 13, fontWeight: 600 }}><Video size={18} />视频</div>
           )
         )}
         {block.type === 'audio' && (
-          <div style={{ width: '100%', height: '100%', background: 'linear-gradient(135deg,#FFF5F5,#FFEBEE)', border: '1px solid #FFCDD2', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 8, padding: '0 10px', overflow: 'hidden' }}>
-            <span style={{ fontSize: 18, flexShrink: 0 }}>🔊</span>
-            <span style={{ fontSize: 12, color: '#C62828', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{block.name || '音频文件'}</span>
+          <div style={{ width: '100%', height: '100%', borderRadius: 12, background: 'linear-gradient(135deg, #FFF5F5, #FFE7E7)', border: '1px solid #FBCACA', display: 'flex', alignItems: 'center', gap: 10, padding: '0 12px', color: '#C62828', boxSizing: 'border-box' }}>
+            <Mic size={18} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{block.name || '音频说明'}</div>
+              <div style={{ fontSize: 10, color: '#B91C1C' }}>点击播放</div>
+            </div>
           </div>
         )}
         {block.type === 'link' && (
           editing ? (
-            <div style={{ width: '100%', height: '100%', background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 4, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 4, padding: '0 10px' }}>
-              <input autoFocus value={block.title ?? ''} onChange={(e) => onUpdate({ title: e.target.value })} placeholder="链接标题" style={{ border: 'none', outline: 'none', background: 'transparent', fontSize: 13, fontWeight: 600, color: '#1D4ED8', cursor: 'text' }} />
-              <input value={block.url ?? ''} onChange={(e) => onUpdate({ url: e.target.value })} onBlur={onEndEdit} placeholder="https://..." style={{ border: 'none', outline: 'none', background: 'transparent', fontSize: 11, color: '#6B7280', cursor: 'text' }} />
+            <div style={{ width: '100%', height: '100%', borderRadius: 12, background: '#EFF6FF', border: '1px solid #BFDBFE', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6, padding: '0 12px', boxSizing: 'border-box' }}>
+              <input autoFocus value={block.title ?? ''} onChange={(e) => onUpdate({ title: e.target.value })} placeholder="链接标题" style={{ border: 'none', outline: 'none', background: 'transparent', fontSize: 13, fontWeight: 700, color: '#1D4ED8' }} />
+              <input value={block.url ?? ''} onChange={(e) => onUpdate({ url: e.target.value })} onBlur={onEndEdit} placeholder="https://..." style={{ border: 'none', outline: 'none', background: 'transparent', fontSize: 11, color: '#64748B' }} />
             </div>
           ) : (
             <div
-              onDoubleClick={(e) => { e.stopPropagation(); onStartEdit(); }}
-              style={{ width: '100%', height: '100%', background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 8, padding: '0 10px', cursor: 'move' }}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                onStartEdit();
+              }}
+              style={{ width: '100%', height: '100%', borderRadius: 12, background: '#EFF6FF', border: '1px solid #BFDBFE', display: 'flex', alignItems: 'center', gap: 10, padding: '0 12px', boxSizing: 'border-box' }}
             >
-              <span style={{ fontSize: 16, flexShrink: 0 }}>🔗</span>
-              <div style={{ overflow: 'hidden' }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: '#1D4ED8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{block.title || '双击编辑链接'}</div>
-                {block.url && <div style={{ fontSize: 10, color: '#6B7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{block.url}</div>}
+              <Link2 size={18} color="#1D4ED8" />
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#1D4ED8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{block.title || '双击编辑链接'}</div>
+                <div style={{ fontSize: 10, color: '#64748B', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{block.url || '未填写链接地址'}</div>
               </div>
             </div>
           )
         )}
       </div>
-
-      {/* Selection controls */}
       {selected && (
         <>
-          <button
-            onMouseDown={(e) => { e.stopPropagation(); onDelete(); }}
-            style={{ position: 'absolute', top: -12, right: -12, width: 22, height: 22, background: '#EF4444', color: '#fff', border: 'none', borderRadius: '50%', cursor: 'pointer', fontSize: 14, lineHeight: '22px', textAlign: 'center', zIndex: 20, padding: 0 }}
-          >×</button>
-          <div
-            data-resize="true"
-            onMouseDown={onMouseDownResize}
-            style={{ position: 'absolute', bottom: -6, right: -6, width: 14, height: 14, background: '#2563eb', borderRadius: '50%', cursor: 'se-resize', zIndex: 20 }}
-          />
+          <button type="button" onMouseDown={(e) => { e.stopPropagation(); onDelete(); }} style={{ position: 'absolute', top: -10, right: -10, width: 24, height: 24, borderRadius: '50%', border: 'none', background: '#EF4444', color: '#fff', cursor: 'pointer', fontSize: 15, lineHeight: '24px', padding: 0, zIndex: 2 }}>×</button>
+          <div data-resize="true" onMouseDown={handleResizeStart} style={{ position: 'absolute', right: -5, bottom: -5, width: 14, height: 14, borderRadius: '50%', background: '#2563EB', cursor: 'se-resize', zIndex: 2 }} />
         </>
       )}
     </div>
   );
 }
 
-// ─── Step Thumbnail ───────────────────────────────────────────────────────────
-
-function StepThumbnail({
-  step, index, active, total, onClick, onDelete,
-  dragIndex, dragOverIndex, onDragStart, onDragEnter, onDragEnd,
+function CardShell({
+  layoutMeta,
+  stepIndex,
+  totalSteps,
+  requiresMedia,
+  blocks,
+  canvasRef,
+  selectedId,
+  editingId,
+  onSelectBlock,
+  onUpdateBlock,
+  onDeleteBlock,
+  onStartEdit,
+  onEndEdit,
+  readOnly,
 }: {
-  step: CanvasStep; index: number; active: boolean; total: number;
-  onClick: () => void; onDelete: () => void;
-  dragIndex: number | null; dragOverIndex: number | null;
-  onDragStart: (i: number) => void; onDragEnter: (i: number) => void; onDragEnd: () => void;
+  layoutMeta: FlashcardLayoutMeta;
+  stepIndex: number;
+  totalSteps: number;
+  requiresMedia: boolean;
+  blocks: CanvasBlock[];
+  canvasRef?: React.RefObject<HTMLDivElement | null>;
+  selectedId?: string | null;
+  editingId?: string | null;
+  onSelectBlock?: (id: string) => void;
+  onUpdateBlock?: (id: string, updates: Partial<CanvasBlock>) => void;
+  onDeleteBlock?: (id: string) => void;
+  onStartEdit?: (id: string) => void;
+  onEndEdit?: () => void;
+  readOnly?: boolean;
 }) {
-  const BG: Record<string, string> = { text: 'rgba(0,0,0,0.12)', image: '#DDD6FE', video: '#374151', audio: '#FEE2E2', link: '#DBEAFE' };
+  const shell = getShellPercents(layoutMeta);
+
   return (
-    <div
-      draggable
-      onDragStart={() => onDragStart(index)}
-      onDragEnter={() => onDragEnter(index)}
-      onDragEnd={onDragEnd}
-      onDragOver={(e) => e.preventDefault()}
-      style={{ opacity: dragIndex === index ? 0.3 : 1, marginBottom: 8 }}
-    >
-      <div
-        onClick={onClick}
-        style={{
-          border: active ? '2px solid #2563eb' : dragOverIndex === index && dragIndex !== index ? '2px solid #93C5FD' : '2px solid #E5E7EB',
-          borderRadius: 8, overflow: 'hidden', cursor: 'pointer', background: '#fff',
-          aspectRatio: '16/10', position: 'relative',
-        }}
-      >
-        <div style={{ width: '100%', height: '100%', background: '#F9FAFB', position: 'relative', overflow: 'hidden' }}>
-          {step.blocks.map((b) => (
-            <div key={b.id} style={{ position: 'absolute', left: `${b.x}%`, top: `${b.y}%`, width: `${b.w}%`, height: `${b.h}%`, background: BG[b.type] ?? '#E5E7EB', borderRadius: 2 }} />
-          ))}
+    <div style={{ height: '100%', maxHeight: '100%', maxWidth: '100%', aspectRatio: `${layoutMeta.card.width} / ${layoutMeta.card.height}`, background: SHELL_COLORS.card, borderRadius: 28, position: 'relative', overflow: 'hidden', border: `1px solid ${SHELL_COLORS.border}`, boxShadow: '0 22px 64px rgba(15, 23, 42, 0.16)' }}>
+      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, #FFFDFB 0%, #FFF7F0 100%)' }} />
+      <div style={{ position: 'absolute', left: '6.15%', right: '6.15%', top: '3.9%', height: '6.2%', borderRadius: 999, background: requiresMedia ? SHELL_COLORS.titleBar : SHELL_COLORS.doneBar, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, letterSpacing: '0.04em' }}>
+        {requiresMedia ? '向左滑动拍照留痕' : '只读预览'}
+      </div>
+      <div style={{ position: 'absolute', left: '9%', right: '9%', top: '11%', color: '#A28E81', fontSize: 13, fontWeight: 700, textAlign: 'center' }}>
+        第 {stepIndex + 1} 步 / 共 {Math.max(1, totalSteps)} 步
+      </div>
+      <div style={{ position: 'absolute', left: shell.contentLeft, top: shell.contentTop, width: shell.contentWidth, height: shell.contentHeight, borderRadius: 22, background: SHELL_COLORS.contentBg, border: '1px dashed #E6D6CA', boxSizing: 'border-box', overflow: 'hidden' }}>
+        <div ref={canvasRef as React.RefObject<HTMLDivElement>} style={{ width: '100%', height: '100%', aspectRatio: `${layoutMeta.contentArea.width} / ${layoutMeta.contentArea.height}`, position: 'relative', background: 'transparent' }} onClick={() => { if (!readOnly && onEndEdit) onEndEdit(); }}>
+          {blocks.map((block) => {
+            if (readOnly) {
+              return <div key={block.id} style={{ position: 'absolute', left: `${block.x}%`, top: `${block.y}%`, width: `${block.w}%`, height: `${block.h}%`, borderRadius: 10, background: block.type === 'text' ? 'rgba(255,255,255,0.96)' : block.type === 'image' ? '#DDD6FE' : block.type === 'video' ? '#374151' : block.type === 'audio' ? '#FEE2E2' : '#DBEAFE' }} />;
+            }
+
+            return (
+              <CanvasElement
+                key={block.id}
+                block={block}
+                selected={selectedId === block.id}
+                editing={editingId === block.id}
+                canvasRef={canvasRef!}
+                onSelect={() => onSelectBlock?.(block.id)}
+                onUpdate={(updates) => onUpdateBlock?.(block.id, updates)}
+                onDelete={() => onDeleteBlock?.(block.id)}
+                onStartEdit={() => onStartEdit?.(block.id)}
+                onEndEdit={() => onEndEdit?.()}
+              />
+            );
+          })}
+          {blocks.length === 0 && !readOnly && (
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#C7B9AE', fontSize: 14, textAlign: 'center', pointerEvents: 'none', padding: 24 }}>
+              从右侧工具栏添加内容，拖动后就是工人端手机卡片里的实际位置。
+            </div>
+          )}
         </div>
-        <div style={{ position: 'absolute', bottom: 3, left: 5, fontSize: 9, fontWeight: 700, color: active ? '#2563eb' : '#9CA3AF' }}>
-          步骤 {index + 1}
+      </div>
+      <div style={{ position: 'absolute', left: '6.15%', right: '6.15%', top: shell.footerTop, height: shell.footerHeight, borderTop: `1px solid ${SHELL_COLORS.footerBorder}`, background: SHELL_COLORS.footerBg, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 18px', boxSizing: 'border-box' }}>
+        <div>
+          <div style={{ fontSize: 12, color: '#A28E81', marginBottom: 4 }}>{requiresMedia ? '左滑拍照，右滑返回上一张' : '阅读完成后继续下一步'}</div>
+          <div style={{ fontSize: 11, color: '#C1A89A' }}>底部操作区固定，不可放置内容</div>
         </div>
-        {total > 1 && (
-          <button
-            onClick={(e) => { e.stopPropagation(); onDelete(); }}
-            style={{ position: 'absolute', top: 2, right: 2, width: 16, height: 16, background: 'rgba(239,68,68,0.85)', color: '#fff', border: 'none', borderRadius: '50%', cursor: 'pointer', fontSize: 10, lineHeight: '16px', textAlign: 'center', padding: 0 }}
-          >×</button>
-        )}
+        <div style={{ width: 46, height: 46, borderRadius: '50%', border: '3px solid #C62828', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#8A6B58', fontSize: 10, fontWeight: 700, background: '#fff', flexShrink: 0 }}>
+          {stepIndex + 1}/{Math.max(1, totalSteps)}
+        </div>
       </div>
     </div>
   );
 }
 
-// ─── Inner Editor (needs Suspense for useSearchParams) ────────────────────────
+function StepThumbnail({
+  step,
+  index,
+  active,
+  total,
+  layoutMeta,
+  dragIndex,
+  dragOverIndex,
+  onClick,
+  onDelete,
+  onDragStart,
+  onDragEnter,
+  onDragEnd,
+}: {
+  step: CanvasStep;
+  index: number;
+  active: boolean;
+  total: number;
+  layoutMeta: FlashcardLayoutMeta;
+  dragIndex: number | null;
+  dragOverIndex: number | null;
+  onClick: () => void;
+  onDelete: () => void;
+  onDragStart: (index: number) => void;
+  onDragEnter: (index: number) => void;
+  onDragEnd: () => void;
+}) {
+  return (
+    <div draggable onDragStart={() => onDragStart(index)} onDragEnter={() => onDragEnter(index)} onDragEnd={onDragEnd} onDragOver={(e) => e.preventDefault()} style={{ opacity: dragIndex === index ? 0.35 : 1, marginBottom: 10 }}>
+      <div onClick={onClick} style={{ position: 'relative', borderRadius: 12, border: active ? '2px solid #2563EB' : dragOverIndex === index && dragIndex !== index ? '2px solid #93C5FD' : '2px solid #E5E7EB', background: '#fff', padding: 6, cursor: 'pointer' }}>
+        <div style={{ height: 160 }}>
+          <CardShell layoutMeta={layoutMeta} stepIndex={index} totalSteps={total} requiresMedia={step.requiresMedia} blocks={step.blocks} readOnly />
+        </div>
+        <div style={{ position: 'absolute', left: 10, bottom: 8, fontSize: 10, fontWeight: 700, color: active ? '#2563EB' : '#94A3B8' }}>步骤 {index + 1}</div>
+        {total > 1 && <button type="button" onClick={(e) => { e.stopPropagation(); onDelete(); }} style={{ position: 'absolute', right: 8, top: 8, width: 18, height: 18, borderRadius: '50%', border: 'none', background: 'rgba(239,68,68,0.92)', color: '#fff', fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0 }}>×</button>}
+      </div>
+    </div>
+  );
+}
 
 function EditorInner() {
   const router = useRouter();
@@ -263,119 +466,70 @@ function EditorInner() {
 
   const [cardTitle, setCardTitle] = useState('');
   const [steps, setSteps] = useState<CanvasStep[]>([{ id: uid(), requiresMedia: false, blocks: [] }]);
+  const [layoutMeta, setLayoutMeta] = useState<FlashcardLayoutMeta>(DEFAULT_LAYOUT_META);
   const [activeStepIdx, setActiveStepIdx] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(Boolean(editId));
   const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(!!editId);
   const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState('');
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingType = useRef<'image' | 'video' | 'audio'>('image');
-
   const activeStep = steps[Math.min(activeStepIdx, steps.length - 1)];
 
   useEffect(() => {
     if (!editId) return;
-    fetch(`/api/flashcards/${editId}`)
-      .then((r) => r.json())
+    fetch(`/api/flashcards/${editId}`, { cache: 'no-store' })
+      .then((res) => res.json())
       .then((data) => {
-        if (data.flashcard) {
-          const fc = data.flashcard;
-          setCardTitle(fc.title ?? '');
-          setSteps(
-            (fc.steps ?? []).map((s: any) => ({
-              id: s.id ?? uid(),
-              requiresMedia: !!s.requiresMedia,
-              blocks: (s.content ?? []).map((b: any) => ({
-                id: b.id ?? uid(),
-                type: b.type,
-                x: b.x ?? 10,
-                y: b.y ?? 10,
-                w: b.w ?? (b.type === 'text' ? 40 : b.type === 'image' || b.type === 'video' ? 45 : 40),
-                h: b.h ?? (b.type === 'text' ? 15 : b.type === 'image' || b.type === 'video' ? 40 : 12),
-                value: b.value,
-                url: b.url,
-                title: b.title,
-                fileId: b.fileId,
-                name: b.name,
-              })),
-            }))
-          );
-        }
+        if (!data.flashcard) return;
+        const flashcard = data.flashcard;
+        const currentLayoutMode = normalizeLayoutMode(flashcard.layoutMode);
+        setCardTitle(flashcard.title ?? '');
+        setLayoutMeta(normalizeLayoutMeta(flashcard.layoutMeta));
+        setSteps((flashcard.steps ?? []).map((step: any, index: number) => ({
+          id: step.id ?? uid(),
+          requiresMedia: Boolean(step.requiresMedia),
+          blocks: normalizeBlocksForEditor(step.content ?? [], step.text ?? `步骤 ${index + 1}`, currentLayoutMode),
+        })));
       })
-      .catch(console.error)
+      .catch((loadError) => {
+        console.error('[editor] load failed', loadError);
+        setError('闪卡加载失败，请返回后重试。');
+      })
       .finally(() => setLoading(false));
   }, [editId]);
 
   function updateActiveStep(updates: Partial<CanvasStep>) {
-    const idx = Math.min(activeStepIdx, steps.length - 1);
-    setSteps((prev) => prev.map((s, i) => (i === idx ? { ...s, ...updates } : s)));
-  }
-
-  function addBlock(type: CanvasBlock['type']) {
-    if (type === 'image' || type === 'video' || type === 'audio') {
-      pendingType.current = type;
-      if (fileInputRef.current) {
-        fileInputRef.current.accept = type === 'image' ? 'image/*' : type === 'video' ? 'video/*' : 'audio/*';
-        fileInputRef.current.click();
-      }
-      return;
-    }
-    const def = DEFAULT_SIZES[type];
-    const block: CanvasBlock = { id: uid(), type, ...def };
-    updateActiveStep({ blocks: [...(activeStep?.blocks ?? []), block] });
-    setSelectedId(block.id);
-    if (type === 'text' || type === 'link') setEditingId(block.id);
-  }
-
-  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    e.target.value = '';
-    setUploading(true);
-    try {
-      const fd = new FormData();
-      fd.append('file', file);
-      const res = await fetch('/api/upload', { method: 'POST', body: fd }).then((r) => r.json());
-      if (res.fileId) {
-        const type = pendingType.current;
-        const def = DEFAULT_SIZES[type];
-        const block: CanvasBlock = { id: uid(), type, ...def, fileId: res.fileId, name: file.name, tempUrl: URL.createObjectURL(file) };
-        updateActiveStep({ blocks: [...(activeStep?.blocks ?? []), block] });
-        setSelectedId(block.id);
-      }
-    } catch (err) {
-      console.error('[editor] upload failed', err);
-    } finally {
-      setUploading(false);
-    }
+    const currentIndex = Math.min(activeStepIdx, steps.length - 1);
+    setSteps((prev) => prev.map((step, index) => (index === currentIndex ? { ...step, ...updates } : step)));
   }
 
   function updateBlock(blockId: string, updates: Partial<CanvasBlock>) {
-    updateActiveStep({ blocks: (activeStep?.blocks ?? []).map((b) => (b.id === blockId ? { ...b, ...updates } : b)) });
+    updateActiveStep({ blocks: (activeStep?.blocks ?? []).map((block) => (block.id === blockId ? clampBlock({ ...block, ...updates }) : block)) });
   }
 
   function deleteBlock(blockId: string) {
-    updateActiveStep({ blocks: (activeStep?.blocks ?? []).filter((b) => b.id !== blockId) });
+    updateActiveStep({ blocks: (activeStep?.blocks ?? []).filter((block) => block.id !== blockId) });
     if (selectedId === blockId) setSelectedId(null);
     if (editingId === blockId) setEditingId(null);
   }
 
   function addStep() {
-    const newStep: CanvasStep = { id: uid(), requiresMedia: false, blocks: [] };
-    setSteps((prev) => [...prev, newStep]);
+    setSteps((prev) => [...prev, { id: uid(), requiresMedia: false, blocks: [] }]);
     setActiveStepIdx(steps.length);
     setSelectedId(null);
     setEditingId(null);
   }
 
-  function deleteStep(idx: number) {
+  function deleteStep(index: number) {
     if (steps.length <= 1) return;
-    setSteps((prev) => prev.filter((_, i) => i !== idx));
+    setSteps((prev) => prev.filter((_, currentIndex) => currentIndex !== index));
     setActiveStepIdx((prev) => Math.max(0, Math.min(prev, steps.length - 2)));
     setSelectedId(null);
     setEditingId(null);
@@ -395,205 +549,170 @@ function EditorInner() {
     setDragOverIdx(null);
   }
 
+  function addBlock(type: CanvasBlockType) {
+    setError('');
+    if (type === 'image' || type === 'video' || type === 'audio') {
+      pendingType.current = type;
+      if (fileInputRef.current) {
+        fileInputRef.current.accept = type === 'image' ? 'image/*' : type === 'video' ? 'video/*' : 'audio/*';
+        fileInputRef.current.click();
+      }
+      return;
+    }
+
+    const block = clampBlock({ id: uid(), type, ...DEFAULT_SIZES[type] });
+    updateActiveStep({ blocks: [...(activeStep?.blocks ?? []), block] });
+    setSelectedId(block.id);
+    if (type === 'text' || type === 'link') setEditingId(block.id);
+  }
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setUploading(true);
+    setError('');
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const result = await fetch('/api/upload', { method: 'POST', body: formData }).then((res) => res.json());
+      if (!result.fileId) {
+        setError('文件上传失败，请重试。');
+        return;
+      }
+
+      const type = pendingType.current;
+      const block = clampBlock({ id: uid(), type, ...DEFAULT_SIZES[type], fileId: result.fileId, name: file.name, tempUrl: URL.createObjectURL(file) });
+      updateActiveStep({ blocks: [...(activeStep?.blocks ?? []), block] });
+      setSelectedId(block.id);
+      setEditingId(null);
+    } catch (uploadError) {
+      console.error('[editor] upload failed', uploadError);
+      setError('文件上传失败，请检查网络后重试。');
+    } finally {
+      setUploading(false);
+    }
+  }
+
   async function handleSave() {
-    if (!cardTitle.trim()) { alert('请输入闪卡标题'); return; }
+    setError('');
+    if (!cardTitle.trim()) {
+      setError('请输入闪卡标题。');
+      return;
+    }
+
+    const sanitizedSteps = steps.map((step, index) => {
+      const fallbackText = `步骤 ${index + 1}`;
+      const source = step.blocks.length > 0 ? step.blocks : [{ id: uid(), type: 'text' as const, value: fallbackText, ...DEFAULT_SIZES.text }];
+      const blocks = source.map((rawBlock) => {
+        const type = normalizeBlockType(rawBlock.type);
+        const next = clampBlock({
+          ...rawBlock,
+          id: rawBlock.id ?? uid(),
+          type,
+          x: blockHasCanvasRect(rawBlock) ? rawBlock.x : DEFAULT_SIZES[type].x,
+          y: blockHasCanvasRect(rawBlock) ? rawBlock.y : DEFAULT_SIZES[type].y,
+          w: blockHasCanvasRect(rawBlock) ? rawBlock.w : DEFAULT_SIZES[type].w,
+          h: blockHasCanvasRect(rawBlock) ? rawBlock.h : type === 'text' ? estimateTextHeight(rawBlock.value) : DEFAULT_SIZES[type].h,
+        });
+        const { tempUrl: _tempUrl, ...rest } = next;
+        return rest;
+      });
+
+      return {
+        id: step.id,
+        text: blocks.find((block) => block.type === 'text')?.value?.trim() || fallbackText,
+        requiresMedia: step.requiresMedia,
+        content: blocks,
+      };
+    });
+
     setSaving(true);
     try {
-      const apiSteps = steps.map((s, i) => {
-        const firstText = s.blocks.find((b) => b.type === 'text')?.value ?? `步骤 ${i + 1}`;
-        return {
-          id: s.id,
-          text: firstText,
-          requiresMedia: s.requiresMedia,
-          // Strip tempUrl (local only), keep everything else including x,y,w,h
-          content: s.blocks.map(({ tempUrl: _t, ...rest }) => rest),
-        };
-      });
-      const body = { title: cardTitle.trim(), description: '', steps: apiSteps };
+      const body = { title: cardTitle.trim(), description: '', layoutMode: 'mobile-canvas', layoutMeta, steps: sanitizedSteps };
 
       if (editId) {
         const res = await fetch(`/api/flashcards/${editId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (!res.ok) { alert('保存失败，请重试'); return; }
+        if (!res.ok) {
+          setError('保存失败，请重试。');
+          return;
+        }
       } else {
-        const res = await fetch('/api/flashcards', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
-        if (!res.id) { alert('保存失败，请重试'); return; }
+        const res = await fetch('/api/flashcards', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((response) => response.json());
+        if (!res.id) {
+          setError('保存失败，请重试。');
+          return;
+        }
       }
+
       router.push('/flashcards');
-    } catch (err) {
-      console.error('[editor] save failed', err);
-      alert('保存失败，请重试');
+    } catch (saveError) {
+      console.error('[editor] save failed', saveError);
+      setError('保存失败，请重试。');
     } finally {
       setSaving(false);
     }
   }
 
   if (loading) {
-    return (
-      <div style={{ position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#F8F9FA', zIndex: 100 }}>
-        <Loader2 size={32} style={{ color: '#9CA3AF', animation: 'spin 1s linear infinite' }} />
-      </div>
-    );
+    return <div style={{ position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#F8FAFC', zIndex: 100 }}><Loader2 size={30} style={{ color: '#94A3B8', animation: 'spin 1s linear infinite' }} /></div>;
   }
 
-  const TOOLBAR_ITEMS = [
-    { type: 'text'  as const, icon: '𝐓', label: '文字',  color: '#374151' },
-    { type: 'image' as const, icon: '🖼', label: '图片',  color: '#7C3AED' },
-    { type: 'video' as const, icon: '🎬', label: '视频',  color: '#1D4ED8' },
-    { type: 'audio' as const, icon: '🔊', label: '音频',  color: '#DC2626' },
-    { type: 'link'  as const, icon: '🔗', label: '链接',  color: '#059669' },
+  const toolbarItems = [
+    { type: 'text' as const, label: '文字', icon: <Type size={18} />, color: '#334155' },
+    { type: 'image' as const, label: '图片', icon: <ImageIcon size={18} />, color: '#7C3AED' },
+    { type: 'video' as const, label: '视频', icon: <Video size={18} />, color: '#1D4ED8' },
+    { type: 'audio' as const, label: '音频', icon: <Mic size={18} />, color: '#DC2626' },
+    { type: 'link' as const, label: '链接', icon: <Link2 size={18} />, color: '#059669' },
   ];
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 100, display: 'flex', flexDirection: 'column', background: '#F1F5F9', overflow: 'hidden' }}>
-      {/* ── Header ── */}
-      <div style={{ height: 54, background: '#fff', borderBottom: '1px solid #E5E7EB', display: 'flex', alignItems: 'center', gap: 12, padding: '0 16px', flexShrink: 0, zIndex: 10 }}>
-        <button
-          onClick={() => router.push('/flashcards')}
-          style={{ display: 'flex', alignItems: 'center', gap: 5, color: '#6B7280', background: 'none', border: 'none', cursor: 'pointer', padding: '4px 8px', borderRadius: 6, fontSize: 13, flexShrink: 0 }}
-        >
-          <ArrowLeft size={15} /> 返回
-        </button>
-        <div style={{ width: 1, height: 18, background: '#E5E7EB', flexShrink: 0 }} />
-        <input
-          value={cardTitle}
-          onChange={(e) => setCardTitle(e.target.value)}
-          placeholder="输入闪卡标题..."
-          style={{ flex: 1, border: 'none', outline: 'none', fontSize: 16, fontWeight: 700, color: '#111827', background: 'transparent', minWidth: 0 }}
-        />
-        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-          <button
-            onClick={() => router.push('/flashcards')}
-            style={{ height: 34, padding: '0 14px', background: 'none', color: '#6B7280', border: '1px solid #E5E7EB', borderRadius: 7, fontSize: 13, cursor: 'pointer' }}
-          >取消</button>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            style={{ height: 34, padding: '0 18px', background: '#2563eb', color: '#fff', border: 'none', borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.7 : 1, display: 'flex', alignItems: 'center', gap: 6 }}
-          >
-            {saving && <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />}
-            {saving ? '保存中...' : '保存'}
-          </button>
+      <div style={{ height: 56, background: '#fff', borderBottom: '1px solid #E5E7EB', display: 'flex', alignItems: 'center', gap: 12, padding: '0 16px', flexShrink: 0 }}>
+        <button type="button" onClick={() => router.push('/flashcards')} style={{ display: 'flex', alignItems: 'center', gap: 6, border: 'none', background: 'none', color: '#64748B', cursor: 'pointer', fontSize: 13 }}><ArrowLeft size={15} />返回</button>
+        <div style={{ width: 1, height: 18, background: '#E5E7EB' }} />
+        <input value={cardTitle} onChange={(e) => setCardTitle(e.target.value)} placeholder="输入闪卡标题..." style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', fontSize: 16, fontWeight: 700, color: '#0F172A', minWidth: 0 }} />
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button type="button" onClick={() => router.push('/flashcards')} style={{ height: 34, padding: '0 14px', borderRadius: 8, border: '1px solid #E5E7EB', background: '#fff', color: '#64748B', cursor: 'pointer', fontSize: 13 }}>取消</button>
+          <button type="button" onClick={handleSave} disabled={saving} style={{ height: 34, padding: '0 18px', borderRadius: 8, border: 'none', background: '#2563EB', color: '#fff', cursor: saving ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, opacity: saving ? 0.7 : 1 }}>{saving && <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />}{saving ? '保存中...' : '保存'}</button>
         </div>
       </div>
-
-      {/* ── Main ── */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        {/* Left: step list */}
-        <div style={{ width: 136, background: '#fff', borderRight: '1px solid #E5E7EB', display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0 }}>
-          <div style={{ padding: '10px 10px 4px', fontSize: 10, fontWeight: 700, color: '#9CA3AF', letterSpacing: '0.08em', textTransform: 'uppercase' }}>步骤列表</div>
-          <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px' }}>
-            {steps.map((step, i) => (
-              <StepThumbnail
-                key={step.id}
-                step={step}
-                index={i}
-                active={i === Math.min(activeStepIdx, steps.length - 1)}
-                total={steps.length}
-                onClick={() => { setActiveStepIdx(i); setSelectedId(null); setEditingId(null); }}
-                onDelete={() => deleteStep(i)}
-                dragIndex={dragIdx}
-                dragOverIndex={dragOverIdx}
-                onDragStart={setDragIdx}
-                onDragEnter={setDragOverIdx}
-                onDragEnd={handleDragEnd}
-              />
-            ))}
+        <div style={{ width: 180, background: '#fff', borderRight: '1px solid #E5E7EB', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+          <div style={{ padding: '12px 12px 6px', fontSize: 10, fontWeight: 700, color: '#94A3B8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>步骤列表</div>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '0 10px 10px' }}>
+            {steps.map((step, index) => <StepThumbnail key={step.id} step={step} index={index} active={index === Math.min(activeStepIdx, steps.length - 1)} total={steps.length} layoutMeta={layoutMeta} dragIndex={dragIdx} dragOverIndex={dragOverIdx} onClick={() => { setActiveStepIdx(index); setSelectedId(null); setEditingId(null); }} onDelete={() => deleteStep(index)} onDragStart={setDragIdx} onDragEnter={setDragOverIdx} onDragEnd={handleDragEnd} />)}
           </div>
-          <div style={{ padding: '8px', borderTop: '1px solid #F3F4F6', flexShrink: 0 }}>
-            <button
-              onClick={addStep}
-              style={{ width: '100%', height: 30, background: '#EFF6FF', color: '#2563eb', border: '1px dashed #BFDBFE', borderRadius: 6, fontSize: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}
-            >
-              <Plus size={12} /> 新建步骤
-            </button>
+          <div style={{ padding: 10, borderTop: '1px solid #F1F5F9' }}><button type="button" onClick={addStep} style={{ width: '100%', height: 32, borderRadius: 8, border: '1px dashed #93C5FD', background: '#EFF6FF', color: '#2563EB', cursor: 'pointer', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}><Plus size={13} />新建步骤</button></div>
+        </div>
+        <div style={{ flex: 1, padding: 28, background: SHELL_COLORS.background, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }} onClick={() => { setSelectedId(null); setEditingId(null); }}>
+          <div style={{ height: '100%', maxHeight: '100%', maxWidth: '100%' }}>
+            <CardShell layoutMeta={layoutMeta} stepIndex={activeStepIdx} totalSteps={steps.length} requiresMedia={Boolean(activeStep?.requiresMedia)} blocks={activeStep?.blocks ?? []} canvasRef={canvasRef} selectedId={selectedId} editingId={editingId} onSelectBlock={(id) => { setSelectedId(id); if (editingId !== id) setEditingId(null); }} onUpdateBlock={updateBlock} onDeleteBlock={deleteBlock} onStartEdit={setEditingId} onEndEdit={() => setEditingId(null)} />
           </div>
         </div>
-
-        {/* Center: canvas */}
-        <div
-          style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#E2E8F0', overflow: 'hidden', padding: 28 }}
-          onClick={() => { setSelectedId(null); setEditingId(null); }}
-        >
-          <div
-            ref={canvasRef}
-            style={{ width: '100%', maxWidth: 900, aspectRatio: '16 / 9', background: '#fff', borderRadius: 14, boxShadow: '0 12px 40px rgba(0,0,0,0.13)', position: 'relative', overflow: 'hidden', flexShrink: 0, maxHeight: '100%' }}
-          >
-            {activeStep?.blocks.map((block) => (
-              <CanvasElement
-                key={block.id}
-                block={block}
-                selected={selectedId === block.id}
-                editing={editingId === block.id}
-                canvasRef={canvasRef}
-                onSelect={() => { setSelectedId(block.id); if (editingId !== block.id) setEditingId(null); }}
-                onUpdate={(u) => updateBlock(block.id, u)}
-                onDelete={() => deleteBlock(block.id)}
-                onStartEdit={() => setEditingId(block.id)}
-                onEndEdit={() => setEditingId(null)}
-              />
-            ))}
-            {(!activeStep || activeStep.blocks.length === 0) && (
-              <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#CBD5E1', pointerEvents: 'none', gap: 10 }}>
-                <div style={{ fontSize: 40 }}>📄</div>
-                <div style={{ fontSize: 14 }}>从右侧工具栏添加元素</div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Right: toolbar */}
-        <div style={{ width: 96, background: '#fff', borderLeft: '1px solid #E5E7EB', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '14px 8px', gap: 8, flexShrink: 0 }}>
-          <div style={{ fontSize: 10, fontWeight: 700, color: '#9CA3AF', letterSpacing: '0.08em', textTransform: 'uppercase', textAlign: 'center', marginBottom: 2 }}>元素</div>
-          {TOOLBAR_ITEMS.map(({ type, icon, label, color }) => (
-            <button
-              key={type}
-              onClick={() => addBlock(type)}
-              disabled={uploading}
-              title={label}
-              style={{ width: 76, height: 62, background: '#F8FAFC', border: '1px solid #E5E7EB', borderRadius: 10, cursor: uploading ? 'not-allowed' : 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, color, opacity: uploading ? 0.5 : 1 }}
-            >
-              <span style={{ fontSize: 22 }}>{icon}</span>
-              <span style={{ fontSize: 11, fontWeight: 600 }}>{label}</span>
-            </button>
-          ))}
-
-          {uploading && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#6B7280', fontSize: 10 }}>
-              <Loader2 size={11} style={{ animation: 'spin 1s linear infinite' }} /> 上传中
-            </div>
-          )}
-
-          <div style={{ width: '100%', height: 1, background: '#F1F5F9', margin: '4px 0' }} />
-
-          {/* requiresMedia toggle */}
+        <div style={{ width: 112, background: '#fff', borderLeft: '1px solid #E5E7EB', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '14px 10px', flexShrink: 0 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: '#94A3B8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>元素</div>
+          {toolbarItems.map((item) => <button key={item.type} type="button" onClick={() => addBlock(item.type)} disabled={uploading} style={{ width: '100%', height: 66, borderRadius: 12, border: '1px solid #E5E7EB', background: '#F8FAFC', color: item.color, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: uploading ? 'not-allowed' : 'pointer', opacity: uploading ? 0.5 : 1 }}>{item.icon}<span style={{ fontSize: 11, fontWeight: 700 }}>{item.label}</span></button>)}
+          {uploading && <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#64748B', fontSize: 11 }}><Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />上传中</div>}
+          <div style={{ width: '100%', height: 1, background: '#F1F5F9' }} />
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 10, color: '#6B7280', marginBottom: 6 }}>需留痕</div>
-            <button
-              onClick={() => updateActiveStep({ requiresMedia: !activeStep?.requiresMedia })}
-              style={{ width: 46, height: 24, borderRadius: 12, border: 'none', cursor: 'pointer', background: activeStep?.requiresMedia ? '#7C3AED' : '#E5E7EB', position: 'relative', transition: 'background 0.2s', padding: 0 }}
-            >
-              <div style={{ position: 'absolute', top: 3, left: activeStep?.requiresMedia ? 23 : 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.2)', transition: 'left 0.2s' }} />
-            </button>
+            <div style={{ fontSize: 11, color: '#64748B', marginBottom: 6 }}>需留痕</div>
+            <button type="button" onClick={() => updateActiveStep({ requiresMedia: !activeStep?.requiresMedia })} style={{ width: 46, height: 24, borderRadius: 999, border: 'none', background: activeStep?.requiresMedia ? '#7C3AED' : '#E5E7EB', cursor: 'pointer', position: 'relative', padding: 0 }}><div style={{ position: 'absolute', top: 3, left: activeStep?.requiresMedia ? 23 : 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(15, 23, 42, 0.2)' }} /></button>
           </div>
+          <div style={{ width: '100%', borderRadius: 12, background: '#F8FAFC', border: '1px solid #E5E7EB', padding: 10, color: '#64748B', fontSize: 11, lineHeight: 1.6, boxSizing: 'border-box' }}>内容只能放在中间浅色区域，保存后会按同样比例显示在工人端手机卡片里。</div>
+          {error && <div style={{ width: '100%', borderRadius: 12, background: '#FEF2F2', border: '1px solid #FECACA', padding: 10, color: '#B91C1C', fontSize: 11, lineHeight: 1.5, boxSizing: 'border-box' }}>{error}</div>}
         </div>
       </div>
-
       <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileChange} />
-
       <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }
 
-// ─── Page Export (wraps inner in Suspense for useSearchParams) ────────────────
-
 export default function FlashcardEditorPage() {
   return (
-    <Suspense fallback={
-      <div style={{ position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#F8F9FA', zIndex: 100 }}>
-        <Loader2 size={32} style={{ color: '#9CA3AF' }} />
-      </div>
-    }>
+    <Suspense fallback={<div style={{ position: 'fixed', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#F8FAFC' }}><Loader2 size={30} style={{ color: '#94A3B8', animation: 'spin 1s linear infinite' }} /></div>}>
       <EditorInner />
     </Suspense>
   );
