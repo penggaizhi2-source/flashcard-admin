@@ -446,11 +446,17 @@ function StepThumbnail({
   onDragEnter: (index: number) => void;
   onDragEnd: () => void;
 }) {
+  const thumbnailWidth = 136;
+  const thumbnailScale = thumbnailWidth / layoutMeta.card.width;
+  const thumbnailHeight = layoutMeta.card.height * thumbnailScale;
+
   return (
     <div draggable onDragStart={() => onDragStart(index)} onDragEnter={() => onDragEnter(index)} onDragEnd={onDragEnd} onDragOver={(e) => e.preventDefault()} style={{ opacity: dragIndex === index ? 0.35 : 1, marginBottom: 10 }}>
       <div onClick={onClick} style={{ position: 'relative', borderRadius: 12, border: active ? '2px solid #2563EB' : dragOverIndex === index && dragIndex !== index ? '2px solid #93C5FD' : '2px solid #E5E7EB', background: '#fff', padding: 6, cursor: 'pointer' }}>
-        <div style={{ height: 160 }}>
-          <CardShell layoutMeta={layoutMeta} stepIndex={index} totalSteps={total} requiresMedia={step.requiresMedia} blocks={step.blocks} readOnly />
+        <div style={{ width: thumbnailWidth, height: thumbnailHeight, overflow: 'hidden', margin: '0 auto' }}>
+          <div style={{ width: layoutMeta.card.width, height: layoutMeta.card.height, transform: `scale(${thumbnailScale})`, transformOrigin: 'top left' }}>
+            <CardShell layoutMeta={layoutMeta} stepIndex={index} totalSteps={total} requiresMedia={step.requiresMedia} blocks={step.blocks} readOnly />
+          </div>
         </div>
         <div style={{ position: 'absolute', left: 10, bottom: 8, fontSize: 10, fontWeight: 700, color: active ? '#2563EB' : '#94A3B8' }}>步骤 {index + 1}</div>
         {total > 1 && <button type="button" onClick={(e) => { e.stopPropagation(); onDelete(); }} style={{ position: 'absolute', right: 8, top: 8, width: 18, height: 18, borderRadius: '50%', border: 'none', background: 'rgba(239,68,68,0.92)', color: '#fff', fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0 }}>×</button>}
