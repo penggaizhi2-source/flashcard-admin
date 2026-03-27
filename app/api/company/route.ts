@@ -24,10 +24,11 @@ export async function PUT(req: NextRequest) {
     const compRes = await db.collection('companies').limit(1).get();
     if (!compRes.data?.length) return NextResponse.json({ error: 'no company' }, { status: 404 });
     const docId = compRes.data[0]._id;
-    const data: Record<string, string> = {};
-    if (name !== undefined) data.name = name;
-    if (inviteCode !== undefined) data.inviteCode = inviteCode;
-    await db.collection('companies').doc(docId).update({ data });
+    const updateData: Record<string, string> = {};
+    if (name !== undefined) updateData.name = name;
+    if (inviteCode !== undefined) updateData.inviteCode = inviteCode;
+    // @cloudbase/node-sdk 的 update() 直接传字段，不要 data: 包裹
+    await db.collection('companies').doc(docId).update(updateData);
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error('[api/company PUT]', err);

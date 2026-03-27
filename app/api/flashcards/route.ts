@@ -70,9 +70,10 @@ export async function POST(req: NextRequest) {
       };
     });
 
-    const res = await db.collection('flashcards').add({
-      data: { companyId, title, description, steps: dbSteps, createdAt: db.serverDate() },
-    });
+    // @cloudbase/node-sdk 的 add() 直接传文档，不要 data: 包裹（那是 wx-server-sdk 的语法）
+    const res = await db.collection('flashcards').add(
+      { companyId, title, description, steps: dbSteps, createdAt: db.serverDate() }
+    );
 
     return NextResponse.json({ id: (res as any).id });
   } catch (err) {

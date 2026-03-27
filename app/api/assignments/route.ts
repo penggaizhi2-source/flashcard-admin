@@ -17,13 +17,11 @@ export async function POST(req: NextRequest) {
     await Promise.all(
       toCreate.map((workerId) =>
         db.collection('assignments').add({
-          data: {
             companyId,
             flashcardId,
             workerId,
             status: 'assigned',
             assignedAt: db.serverDate(),
-          },
         })
       )
     );

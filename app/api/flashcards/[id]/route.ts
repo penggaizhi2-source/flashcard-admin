@@ -18,7 +18,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       };
     });
 
-    await db.collection('flashcards').doc(id).update({ data: { title, description, steps: dbSteps } });
+    // @cloudbase/node-sdk 的 update() 直接传字段，不要 data: 包裹
+    await db.collection('flashcards').doc(id).update({ title, description, steps: dbSteps });
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error('[api/flashcards PUT]', err);
