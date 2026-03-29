@@ -95,6 +95,8 @@ export function validateMediaFile(type: UploadableMediaType, file: File) {
   }
 }
 
+// Browser-side direct upload depends on CloudBase web auth and storage CORS/safe-domain config.
+// Keep this helper for future use, but do not use it as the editor's primary upload path unless that environment is confirmed.
 export async function uploadMediaFile(
   type: UploadableMediaType,
   file: File,

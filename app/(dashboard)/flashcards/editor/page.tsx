@@ -9,9 +9,16 @@ import {
   normalizeLayoutMode,
   type FlashcardLayoutMeta,
 } from '../../../../lib/flashcard-layout';
-import { uploadMediaFile, type UploadableMediaType } from '../../../../lib/cloudbase';
+import type { UploadableMediaType } from '../../../../lib/cloudbase';
 
 type CanvasBlockType = 'text' | 'image' | 'video' | 'audio' | 'link';
+
+type CanvasTextStyle = {
+  fontSize: number;
+  fontWeight: 'normal' | 'bold';
+  fontStyle: 'normal' | 'italic';
+  color: string;
+};
 
 type CanvasBlock = {
   id: string;
@@ -26,6 +33,7 @@ type CanvasBlock = {
   fileId?: string;
   name?: string;
   tempUrl?: string;
+  textStyle?: CanvasTextStyle;
 };
 
 type CanvasStep = {
@@ -55,6 +63,16 @@ const DEFAULT_SIZES: Record<CanvasBlockType, { w: number; h: number; x: number; 
   link: { w: 88, h: 12, x: 6, y: 58 },
 };
 
+const TEXT_STYLE_DEFAULTS: CanvasTextStyle = {
+  fontSize: 14,
+  fontWeight: 'normal',
+  fontStyle: 'normal',
+  color: '#1F2937',
+};
+
+const FONT_SIZE_OPTIONS = [12, 14, 16, 18, 20, 24, 28, 32];
+const TEXT_COLOR_OPTIONS = ['#1F2937', '#DC2626', '#2563EB', '#059669', '#7C3AED', '#EA580C'];
+
 const SHELL_COLORS = {
   background: '#E2E8F0',
   card: '#FFFDFB',
@@ -74,30 +92,60 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+function createEmptyStep(): CanvasStep {
+  return { id: uid(), requiresMedia: false, blocks: [] };
+}
+
 function blockHasCanvasRect(block: Partial<CanvasBlock>) {
   return ['x', 'y', 'w', 'h'].every((key) => typeof block[key as keyof CanvasBlock] === 'number');
 }
 
-function estimateTextHeight(value: string | undefined) {
+function normalizeTextStyle(style: Partial<CanvasTextStyle> | undefined): CanvasTextStyle {
+  return {
+    fontSize: FONT_SIZE_OPTIONS.includes(style?.fontSize ?? -1) ? (style?.fontSize as number) : TEXT_STYLE_DEFAULTS.fontSize,
+    fontWeight: style?.fontWeight === 'bold' ? 'bold' : 'normal',
+    fontStyle: style?.fontStyle === 'italic' ? 'italic' : 'normal',
+    color: typeof style?.color === 'string' && style.color.trim() ? style.color : TEXT_STYLE_DEFAULTS.color,
+  };
+}
+
+function getTextStyle(block: Partial<CanvasBlock> | undefined): CanvasTextStyle {
+  return normalizeTextStyle(block?.textStyle);
+}
+
+function estimateTextHeight(value: string | undefined, fontSize = TEXT_STYLE_DEFAULTS.fontSize) {
   const text = (value ?? '').trim();
   const lines = Math.max(1, Math.ceil(text.length / 22));
-  return clamp(10 + lines * 4, 14, 28);
+  const baseHeight = Math.max(fontSize * 1.9, 14);
+  return clamp(baseHeight + (lines - 1) * Math.max(fontSize * 0.9, 4), 14, 56);
 }
 
 function normalizeBlockType(type: unknown): CanvasBlockType {
   return type === 'image' || type === 'video' || type === 'audio' || type === 'link' ? type : 'text';
 }
 
+function normalizeTextBlock(block: CanvasBlock): CanvasBlock {
+  if (block.type !== 'text') return block;
+  const textStyle = getTextStyle(block);
+  const minHeight = estimateTextHeight(block.value, textStyle.fontSize);
+  return {
+    ...block,
+    textStyle,
+    h: Math.max(block.h, minHeight),
+  };
+}
+
 function clampBlock(block: CanvasBlock): CanvasBlock {
   const w = clamp(block.w, 10, 100);
   const h = clamp(block.h, 8, 100);
-  return {
+  const next = {
     ...block,
     w,
     h,
     x: clamp(block.x, 0, 100 - w),
     y: clamp(block.y, 0, 100 - h),
   };
+  return normalizeTextBlock(next);
 }
 
 function convertLegacyBlocksToCanvas(blocks: any[], fallbackText: string) {
@@ -125,6 +173,7 @@ function convertLegacyBlocksToCanvas(blocks: any[], fallbackText: string) {
       fileId: raw?.fileId,
       name: raw?.name,
       tempUrl: raw?.tempUrl,
+      textStyle: type === 'text' ? normalizeTextStyle(raw?.textStyle) : undefined,
     };
 
     if (cursorY + next.h > 94) next.y = clamp(94 - next.h, 0, 94);
@@ -152,6 +201,7 @@ function normalizeBlocksForEditor(blocks: any[], fallbackText: string, layoutMod
       fileId: raw?.fileId,
       name: raw?.name,
       tempUrl: raw?.tempUrl,
+      textStyle: type === 'text' ? normalizeTextStyle(raw?.textStyle) : undefined,
     });
   });
 }
@@ -257,6 +307,9 @@ function CanvasElement({
     };
   }, [block.id, block.tempUrl, block.type]);
 
+  const textStyle = getTextStyle(block);
+  const textLineHeight = 1.6;
+
   function handleMoveStart(e: React.MouseEvent) {
     if ((e.target as HTMLElement).closest('[data-resize]')) return;
     if ((e.target as HTMLElement).tagName === 'TEXTAREA') return;
@@ -337,6 +390,9 @@ function CanvasElement({
 
   return (
     <div
+      data-testid={selected ? 'selected-canvas-block' : undefined}
+      data-block-type={block.type}
+      data-block-id={block.id}
       style={{
         position: 'absolute',
         left: `${block.x}%`,
@@ -359,19 +415,24 @@ function CanvasElement({
         {block.type === 'text' && (
           editing ? (
             <textarea
+              data-testid="text-block-editor"
               autoFocus
               value={block.value ?? ''}
-              onChange={(e) => onUpdate({ value: e.target.value })}
+              onChange={(e) => onUpdate({
+                value: e.target.value,
+                h: Math.max(block.h, estimateTextHeight(e.target.value, textStyle.fontSize)),
+              })}
               onBlur={onEndEdit}
-              style={{ width: '100%', height: '100%', resize: 'none', border: 'none', outline: 'none', padding: 12, borderRadius: 12, fontSize: 14, lineHeight: 1.6, background: 'rgba(255,255,255,0.95)', color: '#1F2937' }}
+              style={{ width: '100%', height: '100%', resize: 'none', border: 'none', outline: 'none', padding: 12, borderRadius: 12, fontSize: textStyle.fontSize, fontWeight: textStyle.fontWeight, fontStyle: textStyle.fontStyle, lineHeight: textLineHeight, background: 'rgba(255,255,255,0.95)', color: textStyle.color }}
             />
           ) : (
             <div
+              data-testid="text-block-preview"
               onDoubleClick={(e) => {
                 e.stopPropagation();
                 onStartEdit();
               }}
-              style={{ width: '100%', height: '100%', padding: 12, borderRadius: 12, background: 'rgba(255,255,255,0.96)', color: '#1F2937', fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflow: 'hidden', boxShadow: '0 6px 18px rgba(15, 23, 42, 0.08)' }}
+              style={{ width: '100%', height: '100%', padding: 12, borderRadius: 12, background: 'rgba(255,255,255,0.96)', color: textStyle.color, fontSize: textStyle.fontSize, fontWeight: textStyle.fontWeight, fontStyle: textStyle.fontStyle, lineHeight: textLineHeight, whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflow: 'hidden', boxShadow: '0 6px 18px rgba(15, 23, 42, 0.08)' }}
             >
               {block.value || <span style={{ color: '#9CA3AF' }}>双击编辑文字</span>}
             </div>
@@ -380,14 +441,14 @@ function CanvasElement({
         {block.type === 'image' && (
           block.tempUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={block.tempUrl} alt={block.name ?? 'image'} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', borderRadius: 12 }} />
+            <img data-testid="canvas-image-block" src={block.tempUrl} alt={block.name ?? 'image'} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', borderRadius: 12 }} />
           ) : (
             <div style={{ width: '100%', height: '100%', borderRadius: 12, background: '#EDE9FE', color: '#6D28D9', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 13, fontWeight: 600 }}><ImageIcon size={18} />图片</div>
           )
         )}
         {block.type === 'video' && (
           block.tempUrl ? (
-            <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+            <div data-testid="canvas-video-block" style={{ position: 'relative', width: '100%', height: '100%' }}>
               <video ref={videoRef} src={block.tempUrl} playsInline preload="metadata" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', borderRadius: 12, background: '#020617' }} />
               <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', padding: 10, background: 'linear-gradient(180deg, rgba(2,6,23,0.08) 0%, rgba(2,6,23,0.42) 100%)', pointerEvents: 'none' }}>
                 <div style={{ display: 'flex', gap: 8, pointerEvents: 'auto' }}>
@@ -418,7 +479,7 @@ function CanvasElement({
           )
         )}
         {block.type === 'audio' && (
-          <div style={{ width: '100%', height: '100%', borderRadius: 12, background: 'linear-gradient(135deg, #FFF5F5, #FFE7E7)', border: '1px solid #FBCACA', display: 'flex', alignItems: 'center', gap: 10, padding: '0 12px', color: '#C62828', boxSizing: 'border-box' }}>
+          <div data-testid="canvas-audio-block" style={{ width: '100%', height: '100%', borderRadius: 12, background: 'linear-gradient(135deg, #FFF5F5, #FFE7E7)', border: '1px solid #FBCACA', display: 'flex', alignItems: 'center', gap: 10, padding: '0 12px', color: '#C62828', boxSizing: 'border-box' }}>
             <Mic size={18} />
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{block.name || '音频说明'}</div>
@@ -578,7 +639,7 @@ function StepThumbnail({
   const thumbnailHeight = layoutMeta.card.height * thumbnailScale;
 
   return (
-    <div draggable onDragStart={() => onDragStart(index)} onDragEnter={() => onDragEnter(index)} onDragEnd={onDragEnd} onDragOver={(e) => e.preventDefault()} style={{ opacity: dragIndex === index ? 0.35 : 1, marginBottom: 10 }}>
+    <div data-testid="step-thumbnail" data-step-index={index} draggable onDragStart={() => onDragStart(index)} onDragEnter={() => onDragEnter(index)} onDragEnd={onDragEnd} onDragOver={(e) => e.preventDefault()} style={{ opacity: dragIndex === index ? 0.35 : 1, marginBottom: 10 }}>
       <div onClick={onClick} style={{ position: 'relative', borderRadius: 12, border: active ? '2px solid #2563EB' : dragOverIndex === index && dragIndex !== index ? '2px solid #93C5FD' : '2px solid #E5E7EB', background: '#fff', padding: 6, cursor: 'pointer' }}>
         <div style={{ width: thumbnailWidth, height: thumbnailHeight, overflow: 'hidden', margin: '0 auto' }}>
           <div style={{ width: layoutMeta.card.width, height: layoutMeta.card.height, transform: `scale(${thumbnailScale})`, transformOrigin: 'top left' }}>
@@ -610,12 +671,15 @@ function EditorInner() {
   const [error, setError] = useState('');
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+  const [hoveredInsertIdx, setHoveredInsertIdx] = useState<number | null>(null);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pendingType = useRef<'image' | 'video' | 'audio'>('image');
   const pendingStepIndex = useRef(0);
   const activeStep = steps[Math.min(activeStepIdx, steps.length - 1)];
+  const selectedBlock = activeStep?.blocks.find((block) => block.id === selectedId) ?? null;
+  const selectedTextBlock = selectedBlock?.type === 'text' ? selectedBlock : null;
 
   useEffect(() => {
     if (!editId) return;
@@ -654,7 +718,20 @@ function EditorInner() {
   }
 
   function updateBlock(blockId: string, updates: Partial<CanvasBlock>) {
-    updateActiveStep({ blocks: (activeStep?.blocks ?? []).map((block) => (block.id === blockId ? clampBlock({ ...block, ...updates }) : block)) });
+    updateActiveStep({
+      blocks: (activeStep?.blocks ?? []).map((block) => {
+        if (block.id !== blockId) return block;
+        const mergedTextStyle =
+          block.type === 'text' || updates.textStyle
+            ? { ...getTextStyle(block), ...(updates.textStyle ?? {}) }
+            : undefined;
+        return clampBlock({
+          ...block,
+          ...updates,
+          textStyle: mergedTextStyle,
+        });
+      }),
+    });
   }
 
   function deleteBlock(blockId: string) {
@@ -663,17 +740,29 @@ function EditorInner() {
     if (editingId === blockId) setEditingId(null);
   }
 
-  function addStep() {
-    setSteps((prev) => [...prev, { id: uid(), requiresMedia: false, blocks: [] }]);
-    setActiveStepIdx(steps.length);
+  function insertStepAt(index: number) {
+    setSteps((prev) => {
+      const next = [...prev];
+      next.splice(index, 0, createEmptyStep());
+      return next;
+    });
+    setActiveStepIdx(index);
     setSelectedId(null);
     setEditingId(null);
+    setHoveredInsertIdx(null);
+  }
+
+  function addStep() {
+    insertStepAt(steps.length);
   }
 
   function deleteStep(index: number) {
     if (steps.length <= 1) return;
     setSteps((prev) => prev.filter((_, currentIndex) => currentIndex !== index));
-    setActiveStepIdx((prev) => Math.max(0, Math.min(prev, steps.length - 2)));
+    setActiveStepIdx((prev) => {
+      if (prev > index) return prev - 1;
+      return Math.max(0, Math.min(prev, steps.length - 2));
+    });
     setSelectedId(null);
     setEditingId(null);
   }
@@ -690,6 +779,16 @@ function EditorInner() {
     }
     setDragIdx(null);
     setDragOverIdx(null);
+  }
+
+  function updateSelectedTextStyle(updates: Partial<CanvasTextStyle>) {
+    if (!selectedTextBlock) return;
+    updateBlock(selectedTextBlock.id, {
+      textStyle: {
+        ...getTextStyle(selectedTextBlock),
+        ...updates,
+      },
+    });
   }
 
   function addBlock(type: CanvasBlockType) {
@@ -727,15 +826,21 @@ function EditorInner() {
     }
 
     try {
-      const result = await uploadMediaFile(type, file, (progress) => {
-        setUploadState((current) => (current && current.status === 'uploading' ? { ...current, progress } : current));
-      });
-      if (!result.fileId) {
-        setError('文件上传失败，请重试。');
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('type', type);
+      const response = await fetch('/api/upload', { method: 'POST', body: formData });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || !result.fileId) {
+        const message = typeof result?.error === 'string' && result.error.trim()
+          ? result.error
+          : '文件上传失败，请稍后重试';
+        setError(message);
+        setUploadState({ type, fileName: file.name, progress: 0, status: 'error', error: message });
         return;
       }
 
-      const block = clampBlock({ id: uid(), type, ...DEFAULT_SIZES[type], fileId: result.fileId, name: result.name, tempUrl: result.tempUrl });
+      const block = clampBlock({ id: uid(), type, ...DEFAULT_SIZES[type], fileId: result.fileId, name: result.name ?? file.name, tempUrl: URL.createObjectURL(file) });
       updateStepBlocks(targetStepIndex, (blocks) => [...blocks, block]);
       if (activeStepIdx === targetStepIndex) {
         setSelectedId(block.id);
@@ -744,9 +849,9 @@ function EditorInner() {
       setUploadState(null);
     } catch (uploadError) {
       console.error('[editor] upload failed', uploadError);
-      setError('文件上传失败，请检查网络后重试。');
-      const message = uploadError instanceof Error ? uploadError.message : '文件上传失败，请检查网络后重试';
-      setUploadState({ type, fileName: file.name, progress: 0, status: 'error', error: uploadError instanceof Error ? uploadError.message : '文件上传失败，请检查网络后重试' });
+      const message = '文件上传失败，请稍后重试';
+      setError(message);
+      setUploadState({ type, fileName: file.name, progress: 0, status: 'error', error: message });
     }
   }
 
@@ -769,7 +874,7 @@ function EditorInner() {
           x: blockHasCanvasRect(rawBlock) ? rawBlock.x : DEFAULT_SIZES[type].x,
           y: blockHasCanvasRect(rawBlock) ? rawBlock.y : DEFAULT_SIZES[type].y,
           w: blockHasCanvasRect(rawBlock) ? rawBlock.w : DEFAULT_SIZES[type].w,
-          h: blockHasCanvasRect(rawBlock) ? rawBlock.h : type === 'text' ? estimateTextHeight(rawBlock.value) : DEFAULT_SIZES[type].h,
+          h: blockHasCanvasRect(rawBlock) ? rawBlock.h : type === 'text' ? estimateTextHeight(rawBlock.value, getTextStyle(rawBlock).fontSize) : DEFAULT_SIZES[type].h,
         });
         const { tempUrl: _tempUrl, ...rest } = next;
         return rest;
@@ -822,7 +927,6 @@ function EditorInner() {
     { type: 'link' as const, label: '链接', icon: <Link2 size={18} />, color: '#059669' },
   ];
   const isUploading = uploadState?.status === 'uploading';
-  const uploading = false;
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 100, display: 'flex', flexDirection: 'column', background: '#F1F5F9', overflow: 'hidden' }}>
@@ -839,7 +943,61 @@ function EditorInner() {
         <div style={{ width: 180, background: '#fff', borderRight: '1px solid #E5E7EB', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
           <div style={{ padding: '12px 12px 6px', fontSize: 10, fontWeight: 700, color: '#94A3B8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>步骤列表</div>
           <div style={{ flex: 1, overflowY: 'auto', padding: '0 10px 10px' }}>
-            {steps.map((step, index) => <StepThumbnail key={step.id} step={step} index={index} active={index === Math.min(activeStepIdx, steps.length - 1)} total={steps.length} layoutMeta={layoutMeta} dragIndex={dragIdx} dragOverIndex={dragOverIdx} onClick={() => { setActiveStepIdx(index); setSelectedId(null); setEditingId(null); }} onDelete={() => deleteStep(index)} onDragStart={setDragIdx} onDragEnter={setDragOverIdx} onDragEnd={handleDragEnd} />)}
+            <div data-testid="step-rail">
+              {steps.map((step, index) => (
+                <div key={step.id}>
+                  <StepThumbnail
+                    step={step}
+                    index={index}
+                    active={index === Math.min(activeStepIdx, steps.length - 1)}
+                    total={steps.length}
+                    layoutMeta={layoutMeta}
+                    dragIndex={dragIdx}
+                    dragOverIndex={dragOverIdx}
+                    onClick={() => {
+                      setActiveStepIdx(index);
+                      setSelectedId(null);
+                      setEditingId(null);
+                    }}
+                    onDelete={() => deleteStep(index)}
+                    onDragStart={setDragIdx}
+                    onDragEnter={setDragOverIdx}
+                    onDragEnd={handleDragEnd}
+                  />
+                  {index < steps.length - 1 && (
+                    <div
+                      data-testid={`insert-slot-${index + 1}`}
+                      onMouseEnter={() => setHoveredInsertIdx(index + 1)}
+                      onMouseLeave={() => setHoveredInsertIdx((current) => (current === index + 1 ? null : current))}
+                      style={{ height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: -2, marginBottom: 8 }}
+                    >
+                      <button
+                        data-testid={`insert-step-button-${index + 1}`}
+                        type="button"
+                        onClick={() => insertStepAt(index + 1)}
+                        style={{
+                          width: 22,
+                          height: 22,
+                          borderRadius: '50%',
+                          border: '1px solid #93C5FD',
+                          background: '#EFF6FF',
+                          color: '#2563EB',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          cursor: 'pointer',
+                          opacity: hoveredInsertIdx === index + 1 ? 1 : 0,
+                          transform: hoveredInsertIdx === index + 1 ? 'scale(1)' : 'scale(0.92)',
+                          transition: 'opacity 0.18s ease, transform 0.18s ease',
+                        }}
+                      >
+                        <Plus size={12} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
           <div style={{ padding: 10, borderTop: '1px solid #F1F5F9' }}><button type="button" onClick={addStep} style={{ width: '100%', height: 32, borderRadius: 8, border: '1px dashed #93C5FD', background: '#EFF6FF', color: '#2563EB', cursor: 'pointer', fontSize: 12, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}><Plus size={13} />新建步骤</button></div>
         </div>
@@ -848,12 +1006,69 @@ function EditorInner() {
             <CardShell layoutMeta={layoutMeta} stepIndex={activeStepIdx} totalSteps={steps.length} requiresMedia={Boolean(activeStep?.requiresMedia)} blocks={activeStep?.blocks ?? []} canvasRef={canvasRef} selectedId={selectedId} editingId={editingId} onSelectBlock={(id) => { setSelectedId(id); if (editingId !== id) setEditingId(null); }} onUpdateBlock={updateBlock} onDeleteBlock={deleteBlock} onStartEdit={setEditingId} onEndEdit={() => setEditingId(null)} onOpenVideo={(blockId, url) => setVideoOverlay({ blockId, url })} />
           </div>
         </div>
-        <div style={{ width: 112, background: '#fff', borderLeft: '1px solid #E5E7EB', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, padding: '14px 10px', flexShrink: 0 }}>
+        <div style={{ width: 172, background: '#fff', borderLeft: '1px solid #E5E7EB', display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 10, padding: '14px 10px', flexShrink: 0, overflowY: 'auto' }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: '#94A3B8', letterSpacing: '0.08em', textTransform: 'uppercase' }}>元素</div>
-          {toolbarItems.map((item) => <button key={item.type} type="button" onClick={() => addBlock(item.type)} disabled={isUploading} style={{ width: '100%', height: 66, borderRadius: 12, border: '1px solid #E5E7EB', background: '#F8FAFC', color: item.color, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: isUploading ? 'not-allowed' : 'pointer', opacity: isUploading ? 0.5 : 1 }}>{item.icon}<span style={{ fontSize: 11, fontWeight: 700 }}>{item.label}</span></button>)}
-          {uploading && <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#64748B', fontSize: 11 }}><Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />上传中</div>}
+          {toolbarItems.map((item) => (
+            <button key={item.type} data-testid={`toolbar-${item.type}`} type="button" onClick={() => addBlock(item.type)} disabled={isUploading} style={{ width: '100%', height: 58, borderRadius: 12, border: '1px solid #E5E7EB', background: '#F8FAFC', color: item.color, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 5, cursor: isUploading ? 'not-allowed' : 'pointer', opacity: isUploading ? 0.5 : 1 }}>
+              {item.icon}
+              <span style={{ fontSize: 11, fontWeight: 700 }}>{item.label}</span>
+            </button>
+          ))}
           {uploadState && <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 6, color: uploadState.status === 'error' ? '#B91C1C' : '#64748B', fontSize: 11, lineHeight: 1.5 }}>{uploadState.status === 'uploading' && <Loader2 size={12} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />}<div style={{ minWidth: 0, wordBreak: 'break-word' }}>{uploadState.status === 'uploading' ? `上传${uploadState.type === 'video' ? '视频' : uploadState.type === 'image' ? '图片' : '音频'} ${uploadState.progress}%` : uploadState.error}</div></div>}
           <div style={{ width: '100%', height: 1, background: '#F1F5F9' }} />
+          {selectedTextBlock && (
+            <div style={{ width: '100%', borderRadius: 12, background: '#F8FAFC', border: '1px solid #E5E7EB', padding: 10, boxSizing: 'border-box' }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: '#94A3B8', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>文字</div>
+              <label style={{ display: 'block', fontSize: 11, color: '#64748B', marginBottom: 6 }}>字号</label>
+              <select
+                data-testid="text-style-font-size"
+                value={getTextStyle(selectedTextBlock).fontSize}
+                onChange={(event) => updateSelectedTextStyle({ fontSize: Number(event.target.value) })}
+                style={{ width: '100%', height: 32, borderRadius: 8, border: '1px solid #CBD5E1', background: '#fff', padding: '0 8px', fontSize: 12, color: '#0F172A', marginBottom: 10 }}
+              >
+                {FONT_SIZE_OPTIONS.map((size) => (
+                  <option key={size} value={size}>{size}px</option>
+                ))}
+              </select>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                <button
+                  data-testid="text-style-bold"
+                  type="button"
+                  onClick={() => updateSelectedTextStyle({ fontWeight: getTextStyle(selectedTextBlock).fontWeight === 'bold' ? 'normal' : 'bold' })}
+                  style={{ flex: 1, height: 30, borderRadius: 8, border: '1px solid #CBD5E1', background: getTextStyle(selectedTextBlock).fontWeight === 'bold' ? '#DBEAFE' : '#fff', color: '#1E3A8A', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+                >
+                  B
+                </button>
+                <button
+                  data-testid="text-style-italic"
+                  type="button"
+                  onClick={() => updateSelectedTextStyle({ fontStyle: getTextStyle(selectedTextBlock).fontStyle === 'italic' ? 'normal' : 'italic' })}
+                  style={{ flex: 1, height: 30, borderRadius: 8, border: '1px solid #CBD5E1', background: getTextStyle(selectedTextBlock).fontStyle === 'italic' ? '#DBEAFE' : '#fff', color: '#1E3A8A', fontSize: 12, fontStyle: 'italic', cursor: 'pointer' }}
+                >
+                  I
+                </button>
+              </div>
+              <div style={{ fontSize: 11, color: '#64748B', marginBottom: 6 }}>颜色</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                {TEXT_COLOR_OPTIONS.map((color) => (
+                  <button
+                    key={color}
+                    data-testid={`text-color-${color.slice(1).toLowerCase()}`}
+                    type="button"
+                    onClick={() => updateSelectedTextStyle({ color })}
+                    style={{ width: 22, height: 22, borderRadius: '50%', border: getTextStyle(selectedTextBlock).color === color ? '2px solid #0F172A' : '1px solid rgba(15, 23, 42, 0.15)', background: color, cursor: 'pointer' }}
+                  />
+                ))}
+              </div>
+              <input
+                data-testid="text-style-color"
+                type="color"
+                value={getTextStyle(selectedTextBlock).color}
+                onChange={(event) => updateSelectedTextStyle({ color: event.target.value })}
+                style={{ width: '100%', height: 32, border: '1px solid #CBD5E1', borderRadius: 8, background: '#fff', cursor: 'pointer' }}
+              />
+            </div>
+          )}
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 11, color: '#64748B', marginBottom: 6 }}>需留痕</div>
             <button type="button" onClick={() => updateActiveStep({ requiresMedia: !activeStep?.requiresMedia })} style={{ width: 46, height: 24, borderRadius: 999, border: 'none', background: activeStep?.requiresMedia ? '#7C3AED' : '#E5E7EB', cursor: 'pointer', position: 'relative', padding: 0 }}><div style={{ position: 'absolute', top: 3, left: activeStep?.requiresMedia ? 23 : 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(15, 23, 42, 0.2)' }} /></button>
@@ -862,7 +1077,7 @@ function EditorInner() {
           {error && <div style={{ width: '100%', borderRadius: 12, background: '#FEF2F2', border: '1px solid #FECACA', padding: 10, color: '#B91C1C', fontSize: 11, lineHeight: 1.5, boxSizing: 'border-box' }}>{error}</div>}
         </div>
       </div>
-      <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileChange} />
+      <input data-testid="media-file-input" ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileChange} />
       {videoOverlay && <VideoOverlay url={videoOverlay.url} onClose={() => setVideoOverlay(null)} />}
       <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
     </div>
