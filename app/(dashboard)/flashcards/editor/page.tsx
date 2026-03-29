@@ -9,7 +9,7 @@ import {
   normalizeLayoutMode,
   type FlashcardLayoutMeta,
 } from '../../../../lib/flashcard-layout';
-import type { UploadableMediaType } from '../../../../lib/cloudbase';
+import { uploadMediaFile, type UploadableMediaType } from '../../../../lib/cloudbase';
 
 type CanvasBlockType = 'text' | 'image' | 'video' | 'audio' | 'link';
 
@@ -791,6 +791,30 @@ function EditorInner() {
     });
   }
 
+  async function uploadMediaWithFallback(type: UploadableMediaType, file: File, formData: FormData) {
+    try {
+      const response = await fetch('/api/upload', { method: 'POST', body: formData });
+      const result = await response.json().catch(() => ({}));
+      if (response.ok && result.fileId) {
+        return {
+          fileId: result.fileId as string,
+          name: (result.name as string | undefined) ?? file.name,
+          tempUrl: URL.createObjectURL(file),
+        };
+      }
+    } catch (serverUploadError) {
+      console.error('[editor] server upload failed, trying browser fallback', serverUploadError);
+    }
+
+    return uploadMediaFile(type, file, (progress) => {
+      setUploadState((current) => (
+        current && current.status === 'uploading'
+          ? { ...current, progress }
+          : current
+      ));
+    });
+  }
+
   function addBlock(type: CanvasBlockType) {
     setError('');
     if (type === 'image' || type === 'video' || type === 'audio') {
@@ -829,6 +853,15 @@ function EditorInner() {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('type', type);
+      const uploadedResult = await uploadMediaWithFallback(type, file, formData);
+      const uploadedBlock = clampBlock({ id: uid(), type, ...DEFAULT_SIZES[type], fileId: uploadedResult.fileId, name: uploadedResult.name ?? file.name, tempUrl: uploadedResult.tempUrl });
+      updateStepBlocks(targetStepIndex, (blocks) => [...blocks, uploadedBlock]);
+      if (activeStepIdx === targetStepIndex) {
+        setSelectedId(uploadedBlock.id);
+        setEditingId(null);
+      }
+      setUploadState(null);
+      return;
       const response = await fetch('/api/upload', { method: 'POST', body: formData });
       const result = await response.json().catch(() => ({}));
       if (!response.ok || !result.fileId) {
@@ -836,11 +869,11 @@ function EditorInner() {
           ? result.error
           : '文件上传失败，请稍后重试';
         setError(message);
-        setUploadState({ type, fileName: file.name, progress: 0, status: 'error', error: message });
+        setUploadState({ type, fileName: file!.name, progress: 0, status: 'error', error: message });
         return;
       }
 
-      const block = clampBlock({ id: uid(), type, ...DEFAULT_SIZES[type], fileId: result.fileId, name: result.name ?? file.name, tempUrl: URL.createObjectURL(file) });
+      const block = clampBlock({ id: uid(), type, ...DEFAULT_SIZES[type], fileId: result.fileId, name: result.name ?? file!.name, tempUrl: URL.createObjectURL(file!) });
       updateStepBlocks(targetStepIndex, (blocks) => [...blocks, block]);
       if (activeStepIdx === targetStepIndex) {
         setSelectedId(block.id);
