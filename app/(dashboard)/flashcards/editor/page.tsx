@@ -1,8 +1,9 @@
 'use client';
 
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, Expand, Image as ImageIcon, Link2, Loader2, Mic, Pause, Play, Plus, Type, Video, X } from 'lucide-react';
+import type { SerializedEditorState } from 'lexical';
 import {
   DEFAULT_LAYOUT_META,
   normalizeLayoutMeta,
@@ -10,15 +11,24 @@ import {
   type FlashcardLayoutMeta,
 } from '../../../../lib/flashcard-layout';
 import { type UploadableMediaType } from '../../../../lib/cloudbase';
+import { RichTextBlockEditor, type RichTextBlockEditorHandle } from './rich-text-block-editor';
+import {
+  FONT_SIZE_OPTIONS,
+  TEXT_COLOR_OPTIONS,
+  TEXT_STYLE_DEFAULTS,
+  applyStyleToRichTextState,
+  estimateRichTextHeight,
+  extractPlainTextFromRichTextState,
+  extractPrimaryTextStyleFromRichTextState,
+  normalizeRichTextState,
+  normalizeTextStyle,
+  renderRichTextState,
+  type FlashcardTextStyle,
+} from '../../../../lib/flashcard-rich-text';
 
 type CanvasBlockType = 'text' | 'image' | 'video' | 'audio' | 'link';
 
-type CanvasTextStyle = {
-  fontSize: number;
-  fontWeight: 'normal' | 'bold';
-  fontStyle: 'normal' | 'italic';
-  color: string;
-};
+type CanvasTextStyle = FlashcardTextStyle;
 
 type CanvasBlock = {
   id: string;
@@ -34,6 +44,7 @@ type CanvasBlock = {
   name?: string;
   tempUrl?: string;
   textStyle?: CanvasTextStyle;
+  richTextState?: SerializedEditorState;
 };
 
 type CanvasStep = {
@@ -63,16 +74,6 @@ const DEFAULT_SIZES: Record<CanvasBlockType, { w: number; h: number; x: number; 
   link: { w: 88, h: 12, x: 6, y: 58 },
 };
 
-const TEXT_STYLE_DEFAULTS: CanvasTextStyle = {
-  fontSize: 14,
-  fontWeight: 'normal',
-  fontStyle: 'normal',
-  color: '#1F2937',
-};
-
-const FONT_SIZE_OPTIONS = [12, 14, 16, 18, 20, 24, 28, 32];
-const TEXT_COLOR_OPTIONS = ['#1F2937', '#DC2626', '#2563EB', '#059669', '#7C3AED', '#EA580C'];
-
 const SHELL_COLORS = {
   background: '#E2E8F0',
   card: '#FFFDFB',
@@ -100,15 +101,6 @@ function blockHasCanvasRect(block: Partial<CanvasBlock>) {
   return ['x', 'y', 'w', 'h'].every((key) => typeof block[key as keyof CanvasBlock] === 'number');
 }
 
-function normalizeTextStyle(style: Partial<CanvasTextStyle> | undefined): CanvasTextStyle {
-  return {
-    fontSize: FONT_SIZE_OPTIONS.includes(style?.fontSize ?? -1) ? (style?.fontSize as number) : TEXT_STYLE_DEFAULTS.fontSize,
-    fontWeight: style?.fontWeight === 'bold' ? 'bold' : 'normal',
-    fontStyle: style?.fontStyle === 'italic' ? 'italic' : 'normal',
-    color: typeof style?.color === 'string' && style.color.trim() ? style.color : TEXT_STYLE_DEFAULTS.color,
-  };
-}
-
 function getTextStyle(block: Partial<CanvasBlock> | undefined): CanvasTextStyle {
   return normalizeTextStyle(block?.textStyle);
 }
@@ -127,9 +119,10 @@ function normalizeBlockType(type: unknown): CanvasBlockType {
 function normalizeTextBlock(block: CanvasBlock): CanvasBlock {
   if (block.type !== 'text') return block;
   const textStyle = getTextStyle(block);
-  const minHeight = estimateTextHeight(block.value, textStyle.fontSize);
+  const minHeight = estimateRichTextHeight(block.richTextState, block.value, textStyle);
   return {
     ...block,
+    richTextState: normalizeRichTextState(block.richTextState, block.value, textStyle),
     textStyle,
     h: Math.max(block.h, minHeight),
   };
@@ -174,6 +167,7 @@ function convertLegacyBlocksToCanvas(blocks: any[], fallbackText: string) {
       name: raw?.name,
       tempUrl: raw?.tempUrl,
       textStyle: type === 'text' ? normalizeTextStyle(raw?.textStyle) : undefined,
+      richTextState: type === 'text' ? normalizeRichTextState(raw?.richTextState, raw?.value ?? (index === 0 ? fallbackText : raw?.value), raw?.textStyle) : undefined,
     };
 
     if (cursorY + next.h > 94) next.y = clamp(94 - next.h, 0, 94);
@@ -202,6 +196,7 @@ function normalizeBlocksForEditor(blocks: any[], fallbackText: string, layoutMod
       name: raw?.name,
       tempUrl: raw?.tempUrl,
       textStyle: type === 'text' ? normalizeTextStyle(raw?.textStyle) : undefined,
+      richTextState: type === 'text' ? normalizeRichTextState(raw?.richTextState, raw?.value, raw?.textStyle) : undefined,
     });
   });
 }
@@ -262,6 +257,8 @@ function CanvasElement({
   onStartEdit,
   onEndEdit,
   onOpenVideo,
+  onTextStyleChange,
+  onRegisterTextEditor,
 }: {
   block: CanvasBlock;
   selected: boolean;
@@ -273,6 +270,8 @@ function CanvasElement({
   onStartEdit: () => void;
   onEndEdit: () => void;
   onOpenVideo?: (blockId: string, url: string) => void;
+  onTextStyleChange?: (style: CanvasTextStyle) => void;
+  onRegisterTextEditor?: (blockId: string, editor: RichTextBlockEditorHandle | null) => void;
 }) {
   const dragStart = useRef<{ mx: number; my: number; x: number; y: number } | null>(null);
   const resizeStart = useRef<{ mx: number; my: number; w: number; h: number } | null>(null);
@@ -314,6 +313,7 @@ function CanvasElement({
     if ((e.target as HTMLElement).closest('[data-resize]')) return;
     if ((e.target as HTMLElement).tagName === 'TEXTAREA') return;
     if ((e.target as HTMLElement).tagName === 'INPUT') return;
+    if ((e.target as HTMLElement).closest('[data-rich-text-editor="true"]')) return;
     e.stopPropagation();
     onSelect();
 
@@ -414,16 +414,22 @@ function CanvasElement({
       <div style={{ width: '100%', height: '100%', overflow: 'hidden', borderRadius: 12 }}>
         {block.type === 'text' && (
           editing ? (
-            <textarea
-              data-testid="text-block-editor"
-              autoFocus
-              value={block.value ?? ''}
-              onChange={(e) => onUpdate({
-                value: e.target.value,
-                h: Math.max(block.h, estimateTextHeight(e.target.value, textStyle.fontSize)),
+            <RichTextBlockEditor
+              ref={(editor) => onRegisterTextEditor?.(block.id, editor)}
+              blockId={block.id}
+              richTextState={normalizeRichTextState(block.richTextState, block.value, textStyle)}
+              fallbackTextStyle={textStyle}
+              canvasRef={canvasRef}
+              onSelectionStyleChange={(style) => onTextStyleChange?.(style)}
+              onChange={({ richTextState, value, textStyle: nextStyle, minHeight }) => onUpdate({
+                richTextState,
+                value,
+                textStyle: nextStyle,
+                h: typeof minHeight === 'number'
+                  ? Math.max(block.h, clamp(minHeight, 8, 100 - block.y))
+                  : block.h,
               })}
               onBlur={onEndEdit}
-              style={{ width: '100%', height: '100%', resize: 'none', border: 'none', outline: 'none', padding: 12, borderRadius: 12, fontSize: textStyle.fontSize, fontWeight: textStyle.fontWeight, fontStyle: textStyle.fontStyle, lineHeight: textLineHeight, background: 'rgba(255,255,255,0.95)', color: textStyle.color }}
             />
           ) : (
             <div
@@ -432,8 +438,13 @@ function CanvasElement({
                 e.stopPropagation();
                 onStartEdit();
               }}
-              style={{ width: '100%', height: '100%', padding: 12, borderRadius: 12, background: 'rgba(255,255,255,0.96)', color: textStyle.color, fontSize: textStyle.fontSize, fontWeight: textStyle.fontWeight, fontStyle: textStyle.fontStyle, lineHeight: textLineHeight, whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflow: 'hidden', boxShadow: '0 6px 18px rgba(15, 23, 42, 0.08)' }}
+              style={{ width: '100%', height: '100%', padding: 12, borderRadius: 12, background: 'rgba(255,255,255,0.96)', lineHeight: textLineHeight, whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflow: 'hidden', boxShadow: '0 6px 18px rgba(15, 23, 42, 0.08)', position: 'relative', color: 'transparent' }}
             >
+              {block.value && (
+                <div data-testid="text-block-rich-preview" style={{ position: 'absolute', inset: 12, color: textStyle.color, pointerEvents: 'none' }}>
+                  {renderRichTextState(block.richTextState, block.value, textStyle)}
+                </div>
+              )}
               {block.value || <span style={{ color: '#9CA3AF' }}>双击编辑文字</span>}
             </div>
           )
@@ -535,6 +546,8 @@ function CardShell({
   onStartEdit,
   onEndEdit,
   onOpenVideo,
+  onTextStyleChange,
+  onRegisterTextEditor,
   readOnly,
 }: {
   layoutMeta: FlashcardLayoutMeta;
@@ -551,6 +564,8 @@ function CardShell({
   onStartEdit?: (id: string) => void;
   onEndEdit?: () => void;
   onOpenVideo?: (blockId: string, url: string) => void;
+  onTextStyleChange?: (style: CanvasTextStyle) => void;
+  onRegisterTextEditor?: (blockId: string, editor: RichTextBlockEditorHandle | null) => void;
   readOnly?: boolean;
 }) {
   const shell = getShellPercents(layoutMeta);
@@ -584,6 +599,8 @@ function CardShell({
                 onStartEdit={() => onStartEdit?.(block.id)}
                 onEndEdit={() => onEndEdit?.()}
                 onOpenVideo={onOpenVideo}
+                onTextStyleChange={onTextStyleChange}
+                onRegisterTextEditor={onRegisterTextEditor}
               />
             );
           })}
@@ -672,14 +689,22 @@ function EditorInner() {
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
   const [hoveredInsertIdx, setHoveredInsertIdx] = useState<number | null>(null);
+  const [activeTextStyle, setActiveTextStyle] = useState<CanvasTextStyle>(TEXT_STYLE_DEFAULTS);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textEditorRefs = useRef(new Map<string, RichTextBlockEditorHandle | null>());
   const pendingType = useRef<'image' | 'video' | 'audio'>('image');
   const pendingStepIndex = useRef(0);
   const activeStep = steps[Math.min(activeStepIdx, steps.length - 1)];
   const selectedBlock = activeStep?.blocks.find((block) => block.id === selectedId) ?? null;
   const selectedTextBlock = selectedBlock?.type === 'text' ? selectedBlock : null;
+  const selectedTextStyle = useMemo(
+    () => selectedTextBlock
+      ? extractPrimaryTextStyleFromRichTextState(selectedTextBlock.richTextState, selectedTextBlock.textStyle)
+      : TEXT_STYLE_DEFAULTS,
+    [selectedTextBlock]
+  );
 
   useEffect(() => {
     if (!editId) return;
@@ -703,6 +728,15 @@ function EditorInner() {
       })
       .finally(() => setLoading(false));
   }, [editId]);
+
+  useEffect(() => {
+    if (!selectedTextBlock) {
+      setActiveTextStyle(TEXT_STYLE_DEFAULTS);
+      return;
+    }
+
+    setActiveTextStyle(selectedTextStyle);
+  }, [selectedTextBlock, selectedTextStyle]);
 
   function updateActiveStep(updates: Partial<CanvasStep>) {
     const currentIndex = Math.min(activeStepIdx, steps.length - 1);
@@ -783,11 +817,36 @@ function EditorInner() {
 
   function updateSelectedTextStyle(updates: Partial<CanvasTextStyle>) {
     if (!selectedTextBlock) return;
+    const nextToolbarStyle = normalizeTextStyle({ ...activeTextStyle, ...updates });
+    setActiveTextStyle(nextToolbarStyle);
+
+    const activeEditor = editingId === selectedTextBlock.id
+      ? textEditorRefs.current.get(selectedTextBlock.id)
+      : null;
+
+    if (activeEditor) {
+      activeEditor.applyTextStyle(updates);
+      return;
+    }
+
+    const currentRichTextState = normalizeRichTextState(
+      selectedTextBlock.richTextState,
+      selectedTextBlock.value,
+      selectedTextBlock.textStyle
+    );
+    const nextRichTextState = applyStyleToRichTextState(
+      currentRichTextState,
+      updates,
+      nextToolbarStyle
+    );
+    const nextValue = extractPlainTextFromRichTextState(nextRichTextState, selectedTextBlock.value ?? '');
+    const nextTextStyle = extractPrimaryTextStyleFromRichTextState(nextRichTextState, nextToolbarStyle);
+
     updateBlock(selectedTextBlock.id, {
-      textStyle: {
-        ...getTextStyle(selectedTextBlock),
-        ...updates,
-      },
+      richTextState: nextRichTextState,
+      value: nextValue,
+      textStyle: nextTextStyle,
+      h: Math.max(selectedTextBlock.h, estimateRichTextHeight(nextRichTextState, nextValue, nextTextStyle)),
     });
   }
 
@@ -897,14 +956,30 @@ function EditorInner() {
       const source = step.blocks.length > 0 ? step.blocks : [{ id: uid(), type: 'text' as const, value: fallbackText, ...DEFAULT_SIZES.text }];
       const blocks = source.map((rawBlock) => {
         const type = normalizeBlockType(rawBlock.type);
+        const richTextState = type === 'text'
+          ? normalizeRichTextState(rawBlock.richTextState, rawBlock.value, rawBlock.textStyle)
+          : rawBlock.richTextState;
+        const value = type === 'text'
+          ? extractPlainTextFromRichTextState(richTextState, rawBlock.value ?? fallbackText)
+          : rawBlock.value;
+        const textStyle = type === 'text'
+          ? extractPrimaryTextStyleFromRichTextState(richTextState, rawBlock.textStyle)
+          : rawBlock.textStyle;
         const next = clampBlock({
           ...rawBlock,
           id: rawBlock.id ?? uid(),
           type,
+          value,
+          textStyle,
+          richTextState,
           x: blockHasCanvasRect(rawBlock) ? rawBlock.x : DEFAULT_SIZES[type].x,
           y: blockHasCanvasRect(rawBlock) ? rawBlock.y : DEFAULT_SIZES[type].y,
           w: blockHasCanvasRect(rawBlock) ? rawBlock.w : DEFAULT_SIZES[type].w,
-          h: blockHasCanvasRect(rawBlock) ? rawBlock.h : type === 'text' ? estimateTextHeight(rawBlock.value, getTextStyle(rawBlock).fontSize) : DEFAULT_SIZES[type].h,
+          h: blockHasCanvasRect(rawBlock)
+            ? rawBlock.h
+            : type === 'text'
+              ? estimateRichTextHeight(richTextState, value, textStyle)
+              : DEFAULT_SIZES[type].h,
         });
         const { tempUrl: _tempUrl, ...rest } = next;
         return rest;
@@ -966,7 +1041,7 @@ function EditorInner() {
         <input value={cardTitle} onChange={(e) => setCardTitle(e.target.value)} placeholder="输入闪卡标题..." style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', fontSize: 16, fontWeight: 700, color: '#0F172A', minWidth: 0 }} />
         <div style={{ display: 'flex', gap: 8 }}>
           <button type="button" onClick={() => router.push('/flashcards')} style={{ height: 34, padding: '0 14px', borderRadius: 8, border: '1px solid #E5E7EB', background: '#fff', color: '#64748B', cursor: 'pointer', fontSize: 13 }}>取消</button>
-          <button type="button" onClick={handleSave} disabled={saving} style={{ height: 34, padding: '0 18px', borderRadius: 8, border: 'none', background: '#2563EB', color: '#fff', cursor: saving ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, opacity: saving ? 0.7 : 1 }}>{saving && <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />}{saving ? '保存中...' : '保存'}</button>
+          <button data-testid="flashcard-save" type="button" onClick={handleSave} disabled={saving} style={{ height: 34, padding: '0 18px', borderRadius: 8, border: 'none', background: '#2563EB', color: '#fff', cursor: saving ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, opacity: saving ? 0.7 : 1 }}>{saving && <Loader2 size={13} style={{ animation: 'spin 1s linear infinite' }} />}{saving ? '保存中...' : '保存'}</button>
         </div>
       </div>
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -1033,7 +1108,7 @@ function EditorInner() {
         </div>
         <div style={{ flex: 1, padding: 28, background: SHELL_COLORS.background, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }} onClick={() => { setSelectedId(null); setEditingId(null); }}>
           <div style={{ height: '100%', maxHeight: '100%', maxWidth: '100%' }}>
-            <CardShell layoutMeta={layoutMeta} stepIndex={activeStepIdx} totalSteps={steps.length} requiresMedia={Boolean(activeStep?.requiresMedia)} blocks={activeStep?.blocks ?? []} canvasRef={canvasRef} selectedId={selectedId} editingId={editingId} onSelectBlock={(id) => { setSelectedId(id); if (editingId !== id) setEditingId(null); }} onUpdateBlock={updateBlock} onDeleteBlock={deleteBlock} onStartEdit={setEditingId} onEndEdit={() => setEditingId(null)} onOpenVideo={(blockId, url) => setVideoOverlay({ blockId, url })} />
+            <CardShell layoutMeta={layoutMeta} stepIndex={activeStepIdx} totalSteps={steps.length} requiresMedia={Boolean(activeStep?.requiresMedia)} blocks={activeStep?.blocks ?? []} canvasRef={canvasRef} selectedId={selectedId} editingId={editingId} onSelectBlock={(id) => { setSelectedId(id); if (editingId !== id) setEditingId(null); }} onUpdateBlock={updateBlock} onDeleteBlock={deleteBlock} onStartEdit={setEditingId} onEndEdit={() => setEditingId(null)} onOpenVideo={(blockId, url) => setVideoOverlay({ blockId, url })} onTextStyleChange={setActiveTextStyle} onRegisterTextEditor={(blockId, editor) => { if (editor) textEditorRefs.current.set(blockId, editor); else textEditorRefs.current.delete(blockId); }} />
           </div>
         </div>
         <div style={{ width: 172, background: '#fff', borderLeft: '1px solid #E5E7EB', display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 10, padding: '14px 10px', flexShrink: 0, overflowY: 'auto' }}>
@@ -1047,12 +1122,12 @@ function EditorInner() {
           {uploadState && <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 6, color: uploadState.status === 'error' ? '#B91C1C' : '#64748B', fontSize: 11, lineHeight: 1.5 }}>{uploadState.status === 'uploading' && <Loader2 size={12} style={{ animation: 'spin 1s linear infinite', flexShrink: 0 }} />}<div style={{ minWidth: 0, wordBreak: 'break-word' }}>{uploadState.status === 'uploading' ? `上传${uploadState.type === 'video' ? '视频' : uploadState.type === 'image' ? '图片' : '音频'} ${uploadState.progress}%` : uploadState.error}</div></div>}
           <div style={{ width: '100%', height: 1, background: '#F1F5F9' }} />
           {selectedTextBlock && (
-            <div style={{ width: '100%', borderRadius: 12, background: '#F8FAFC', border: '1px solid #E5E7EB', padding: 10, boxSizing: 'border-box' }}>
+            <div data-text-style-toolbar="true" style={{ width: '100%', borderRadius: 12, background: '#F8FAFC', border: '1px solid #E5E7EB', padding: 10, boxSizing: 'border-box' }}>
               <div style={{ fontSize: 10, fontWeight: 700, color: '#94A3B8', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>文字</div>
               <label style={{ display: 'block', fontSize: 11, color: '#64748B', marginBottom: 6 }}>字号</label>
               <select
                 data-testid="text-style-font-size"
-                value={getTextStyle(selectedTextBlock).fontSize}
+                value={activeTextStyle.fontSize}
                 onChange={(event) => updateSelectedTextStyle({ fontSize: Number(event.target.value) })}
                 style={{ width: '100%', height: 32, borderRadius: 8, border: '1px solid #CBD5E1', background: '#fff', padding: '0 8px', fontSize: 12, color: '#0F172A', marginBottom: 10 }}
               >
@@ -1064,16 +1139,16 @@ function EditorInner() {
                 <button
                   data-testid="text-style-bold"
                   type="button"
-                  onClick={() => updateSelectedTextStyle({ fontWeight: getTextStyle(selectedTextBlock).fontWeight === 'bold' ? 'normal' : 'bold' })}
-                  style={{ flex: 1, height: 30, borderRadius: 8, border: '1px solid #CBD5E1', background: getTextStyle(selectedTextBlock).fontWeight === 'bold' ? '#DBEAFE' : '#fff', color: '#1E3A8A', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+                  onClick={() => updateSelectedTextStyle({ fontWeight: activeTextStyle.fontWeight === 'bold' ? 'normal' : 'bold' })}
+                  style={{ flex: 1, height: 30, borderRadius: 8, border: '1px solid #CBD5E1', background: activeTextStyle.fontWeight === 'bold' ? '#DBEAFE' : '#fff', color: '#1E3A8A', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
                 >
                   B
                 </button>
                 <button
                   data-testid="text-style-italic"
                   type="button"
-                  onClick={() => updateSelectedTextStyle({ fontStyle: getTextStyle(selectedTextBlock).fontStyle === 'italic' ? 'normal' : 'italic' })}
-                  style={{ flex: 1, height: 30, borderRadius: 8, border: '1px solid #CBD5E1', background: getTextStyle(selectedTextBlock).fontStyle === 'italic' ? '#DBEAFE' : '#fff', color: '#1E3A8A', fontSize: 12, fontStyle: 'italic', cursor: 'pointer' }}
+                  onClick={() => updateSelectedTextStyle({ fontStyle: activeTextStyle.fontStyle === 'italic' ? 'normal' : 'italic' })}
+                  style={{ flex: 1, height: 30, borderRadius: 8, border: '1px solid #CBD5E1', background: activeTextStyle.fontStyle === 'italic' ? '#DBEAFE' : '#fff', color: '#1E3A8A', fontSize: 12, fontStyle: 'italic', cursor: 'pointer' }}
                 >
                   I
                 </button>
@@ -1086,14 +1161,14 @@ function EditorInner() {
                     data-testid={`text-color-${color.slice(1).toLowerCase()}`}
                     type="button"
                     onClick={() => updateSelectedTextStyle({ color })}
-                    style={{ width: 22, height: 22, borderRadius: '50%', border: getTextStyle(selectedTextBlock).color === color ? '2px solid #0F172A' : '1px solid rgba(15, 23, 42, 0.15)', background: color, cursor: 'pointer' }}
+                    style={{ width: 22, height: 22, borderRadius: '50%', border: activeTextStyle.color === color ? '2px solid #0F172A' : '1px solid rgba(15, 23, 42, 0.15)', background: color, cursor: 'pointer' }}
                   />
                 ))}
               </div>
               <input
                 data-testid="text-style-color"
                 type="color"
-                value={getTextStyle(selectedTextBlock).color}
+                value={activeTextStyle.color}
                 onChange={(event) => updateSelectedTextStyle({ color: event.target.value })}
                 style={{ width: '100%', height: 32, border: '1px solid #CBD5E1', borderRadius: 8, background: '#fff', cursor: 'pointer' }}
               />

@@ -20,7 +20,24 @@ async function getFlashcardId(page: Page, title: string) {
   }, title);
 }
 
-test('flashcard editor supports step insertion, text styling, and media uploads', async ({ page }) => {
+async function getTextPreviewRuns(page: Page) {
+  return page.getByTestId('text-block-rich-preview').evaluate((node) =>
+    Array.from(node.querySelectorAll('span'))
+      .filter((element) => element.children.length === 0 && element.textContent?.trim())
+      .map((element) => {
+        const style = window.getComputedStyle(element);
+        return {
+          text: element.textContent?.trim() ?? '',
+          fontSize: style.fontSize,
+          fontWeight: style.fontWeight,
+          fontStyle: style.fontStyle,
+          color: style.color,
+        };
+      })
+  );
+}
+
+test('flashcard editor supports mixed text styles, step insertion, and media uploads', async ({ page }) => {
   const adminPassword = readAdminPassword();
   test.skip(!adminPassword, 'ADMIN_PASSWORD is required for the local smoke test.');
 
@@ -47,17 +64,35 @@ test('flashcard editor supports step insertion, text styling, and media uploads'
     await expect(page.getByTestId('step-thumbnail')).toHaveCount(4);
 
     await page.getByTestId('toolbar-text').click();
-    await page.getByTestId('text-block-editor').fill('中间插入步骤文本');
+    await page.getByTestId('text-block-editor').click();
+    await page.keyboard.type('First line');
+    await page.keyboard.press('Enter');
     await page.getByTestId('text-style-font-size').selectOption('24');
     await page.getByTestId('text-style-bold').click();
     await page.getByTestId('text-style-italic').click();
     await page.getByTestId('text-color-2563eb').click();
+    await page.keyboard.type('Second line');
 
-    await expect(page.getByTestId('text-block-preview')).toContainText('中间插入步骤文本');
-    await expect(page.getByTestId('text-block-preview')).toHaveCSS('font-size', '24px');
-    await expect(page.getByTestId('text-block-preview')).toHaveCSS('font-style', 'italic');
-    await expect(page.getByTestId('text-block-preview')).toHaveCSS('font-weight', '700');
-    await expect(page.getByTestId('text-block-preview')).toHaveCSS('color', 'rgb(37, 99, 235)');
+    await page.getByTestId('step-thumbnail').first().click();
+    await page.getByTestId('step-thumbnail').nth(1).click();
+    await expect(page.getByTestId('text-block-preview')).toContainText('First line');
+    await expect(page.getByTestId('text-block-preview')).toContainText('Second line');
+    expect(await getTextPreviewRuns(page)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        text: 'First line',
+        fontSize: '14px',
+        fontWeight: '400',
+        fontStyle: 'normal',
+        color: 'rgb(31, 41, 55)',
+      }),
+      expect.objectContaining({
+        text: 'Second line',
+        fontSize: '24px',
+        fontWeight: '700',
+        fontStyle: 'italic',
+        color: 'rgb(37, 99, 235)',
+      }),
+    ]));
 
     await page.getByTestId('toolbar-image').click();
     await page.getByTestId('media-file-input').setInputFiles(imageFile);
@@ -71,7 +106,7 @@ test('flashcard editor supports step insertion, text styling, and media uploads'
     await page.getByTestId('media-file-input').setInputFiles(audioFile);
     await expect(page.getByTestId('canvas-audio-block')).toHaveCount(1);
 
-    await page.getByRole('button', { name: /保存/ }).click();
+    await page.getByTestId('flashcard-save').click();
     await page.waitForURL('**/flashcards');
 
     flashcardId = await getFlashcardId(page, title);
@@ -80,11 +115,24 @@ test('flashcard editor supports step insertion, text styling, and media uploads'
     await page.goto(`/flashcards/editor?id=${flashcardId}`);
     await expect(page.getByTestId('step-thumbnail')).toHaveCount(4);
     await page.getByTestId('step-thumbnail').nth(1).click();
-    await expect(page.getByTestId('text-block-preview')).toContainText('中间插入步骤文本');
-    await expect(page.getByTestId('text-block-preview')).toHaveCSS('font-size', '24px');
-    await expect(page.getByTestId('text-block-preview')).toHaveCSS('font-style', 'italic');
-    await expect(page.getByTestId('text-block-preview')).toHaveCSS('font-weight', '700');
-    await expect(page.getByTestId('text-block-preview')).toHaveCSS('color', 'rgb(37, 99, 235)');
+    await expect(page.getByTestId('text-block-preview')).toContainText('First line');
+    await expect(page.getByTestId('text-block-preview')).toContainText('Second line');
+    expect(await getTextPreviewRuns(page)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        text: 'First line',
+        fontSize: '14px',
+        fontWeight: '400',
+        fontStyle: 'normal',
+        color: 'rgb(31, 41, 55)',
+      }),
+      expect.objectContaining({
+        text: 'Second line',
+        fontSize: '24px',
+        fontWeight: '700',
+        fontStyle: 'italic',
+        color: 'rgb(37, 99, 235)',
+      }),
+    ]));
     await expect(page.getByTestId('canvas-image-block')).toHaveCount(1);
     await expect(page.getByTestId('canvas-video-block')).toHaveCount(1);
     await expect(page.getByTestId('canvas-audio-block')).toHaveCount(1);
