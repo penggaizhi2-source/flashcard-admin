@@ -9,7 +9,7 @@ import {
   normalizeLayoutMode,
   type FlashcardLayoutMeta,
 } from '../../../../lib/flashcard-layout';
-import { uploadMediaFile, type UploadableMediaType } from '../../../../lib/cloudbase';
+import { type UploadableMediaType } from '../../../../lib/cloudbase';
 
 type CanvasBlockType = 'text' | 'image' | 'video' | 'audio' | 'link';
 
@@ -791,28 +791,22 @@ function EditorInner() {
     });
   }
 
-  async function uploadMediaWithFallback(type: UploadableMediaType, file: File, formData: FormData) {
-    try {
-      const response = await fetch('/api/upload', { method: 'POST', body: formData });
-      const result = await response.json().catch(() => ({}));
-      if (response.ok && result.fileId) {
-        return {
-          fileId: result.fileId as string,
-          name: (result.name as string | undefined) ?? file.name,
-          tempUrl: URL.createObjectURL(file),
-        };
-      }
-    } catch (serverUploadError) {
-      console.error('[editor] server upload failed, trying browser fallback', serverUploadError);
+  async function uploadMedia(type: UploadableMediaType, file: File, formData: FormData) {
+    const response = await fetch('/api/upload', { method: 'POST', body: formData });
+    const result = await response.json().catch(() => ({} as { error?: string; code?: string; fileId?: string; name?: string }));
+
+    if (!response.ok || typeof result.fileId !== 'string' || !result.fileId.trim()) {
+      const fallbackMessage = typeof result.code === 'string' && result.code === 'UPLOAD_CONFIG_ERROR'
+        ? '上传服务配置不完整，请联系管理员'
+        : '文件上传失败，请稍后重试';
+      throw new Error(typeof result.error === 'string' && result.error.trim() ? result.error : fallbackMessage);
     }
 
-    return uploadMediaFile(type, file, (progress) => {
-      setUploadState((current) => (
-        current && current.status === 'uploading'
-          ? { ...current, progress }
-          : current
-      ));
-    });
+    return {
+      fileId: result.fileId,
+      name: (result.name as string | undefined) ?? file.name,
+      tempUrl: URL.createObjectURL(file),
+    };
   }
 
   function addBlock(type: CanvasBlockType) {
@@ -853,7 +847,7 @@ function EditorInner() {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('type', type);
-      const uploadedResult = await uploadMediaWithFallback(type, file, formData);
+      const uploadedResult = await uploadMedia(type, file, formData);
       const uploadedBlock = clampBlock({ id: uid(), type, ...DEFAULT_SIZES[type], fileId: uploadedResult.fileId, name: uploadedResult.name ?? file.name, tempUrl: uploadedResult.tempUrl });
       updateStepBlocks(targetStepIndex, (blocks) => [...blocks, uploadedBlock]);
       if (activeStepIdx === targetStepIndex) {
@@ -861,10 +855,7 @@ function EditorInner() {
         setEditingId(null);
       }
       setUploadState(null);
-      return;
-      const response = await fetch('/api/upload', { method: 'POST', body: formData });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok || !result.fileId) {
+      /*
         const message = typeof result?.error === 'string' && result.error.trim()
           ? result.error
           : '文件上传失败，请稍后重试';
@@ -880,8 +871,14 @@ function EditorInner() {
         setEditingId(null);
       }
       setUploadState(null);
+      */
     } catch (uploadError) {
       console.error('[editor] upload failed', uploadError);
+      if (uploadError instanceof Error && uploadError.message.trim()) {
+        setError(uploadError.message);
+        setUploadState({ type, fileName: file.name, progress: 0, status: 'error', error: uploadError.message });
+        return;
+      }
       const message = '文件上传失败，请稍后重试';
       setError(message);
       setUploadState({ type, fileName: file.name, progress: 0, status: 'error', error: message });

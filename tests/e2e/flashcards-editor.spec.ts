@@ -96,3 +96,38 @@ test('flashcard editor supports step insertion, text styling, and media uploads'
     }
   }
 });
+
+test('flashcard editor shows the upload API error without inserting media blocks', async ({ page }) => {
+  const adminPassword = readAdminPassword();
+  test.skip(!adminPassword, 'ADMIN_PASSWORD is required for the local smoke test.');
+
+  let uploadRequests = 0;
+
+  await page.route('**/api/upload', async (route) => {
+    uploadRequests += 1;
+    await route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        error: 'Upload service is misconfigured.',
+        code: 'UPLOAD_CONFIG_ERROR',
+      }),
+    });
+  });
+
+  await page.goto('/login');
+  await page.getByTestId('login-username').fill('admin');
+  await page.getByTestId('login-password').fill(adminPassword);
+  await page.getByTestId('login-submit').click();
+  await page.waitForURL('**/dashboard');
+
+  await page.goto('/flashcards/editor');
+  await page.locator('input').first().fill(`e2e-upload-error-${Date.now()}`);
+
+  await page.getByTestId('toolbar-image').click();
+  await page.getByTestId('media-file-input').setInputFiles(imageFile);
+
+  await expect(page.getByText('Upload service is misconfigured.').first()).toBeVisible();
+  await expect(page.getByTestId('canvas-image-block')).toHaveCount(0);
+  expect(uploadRequests).toBe(1);
+});
