@@ -1,7 +1,14 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { RefreshCw, Copy, Check, Trash2, UserCircle2 } from 'lucide-react';
+import { RefreshCw, Copy, Check, Trash2, UserCircle2, Clock, MapPin } from 'lucide-react';
+
+type Attendance = {
+  clockInTime: string;
+  clockOutTime: string;
+  requireLocation: boolean;
+  projectSiteId: string;
+};
 
 type Worker = {
   id: string;
@@ -11,7 +18,10 @@ type Worker = {
   assignedCards: number;
   completedCards: number;
   status?: string;
+  attendance?: Attendance | null;
 };
+
+type ProjectSite = { id: string; name: string };
 
 function DeleteConfirm({ name, onConfirm, onClose }: { name: string; onConfirm: () => void; onClose: () => void }) {
   return (
@@ -43,13 +53,136 @@ function Avatar({ name, avatarUrl }: { name: string; avatarUrl?: string }) {
   );
 }
 
+function AttendanceModal({
+  worker,
+  sites,
+  onSave,
+  onClose,
+}: {
+  worker: Worker;
+  sites: ProjectSite[];
+  onSave: (id: string, att: Attendance) => void;
+  onClose: () => void;
+}) {
+  const existing = worker.attendance;
+  const [clockIn, setClockIn] = useState(existing?.clockInTime ?? '08:00');
+  const [clockOut, setClockOut] = useState(existing?.clockOutTime ?? '17:30');
+  const [requireLoc, setRequireLoc] = useState(existing?.requireLocation ?? false);
+  const [siteId, setSiteId] = useState(existing?.projectSiteId ?? '');
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    setSaving(true);
+    await onSave(worker.id, {
+      clockInTime: clockIn,
+      clockOutTime: clockOut,
+      requireLocation: requireLoc,
+      projectSiteId: requireLoc ? siteId : '',
+    });
+    setSaving(false);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+          <div>
+            <h2 className="font-bold text-gray-800">考勤设置</h2>
+            <p className="text-xs text-gray-400 mt-0.5">{worker.name}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg">✕</button>
+        </div>
+
+        <div className="px-6 py-5 space-y-5">
+          {/* 上下班时间 */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">上班时间</label>
+              <input
+                type="time"
+                value={clockIn}
+                onChange={(e) => setClockIn(e.target.value)}
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">下班时间</label>
+              <input
+                type="time"
+                value={clockOut}
+                onChange={(e) => setClockOut(e.target.value)}
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          {/* 定位要求 */}
+          <div>
+            <label className="flex items-center gap-3 cursor-pointer">
+              <div
+                className={`w-10 h-6 rounded-full relative transition-colors ${requireLoc ? 'bg-blue-600' : 'bg-gray-200'}`}
+                onClick={() => setRequireLoc(!requireLoc)}
+              >
+                <div className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${requireLoc ? 'translate-x-4' : 'translate-x-0.5'}`} />
+              </div>
+              <div>
+                <span className="text-sm font-medium text-gray-700">需要定位打卡</span>
+                <p className="text-xs text-gray-400">开启后工人必须在指定工地范围内才能打卡</p>
+              </div>
+            </label>
+          </div>
+
+          {/* 工地选择 */}
+          {requireLoc && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">打卡工地</label>
+              {sites.length === 0 ? (
+                <p className="text-xs text-amber-600 bg-amber-50 rounded-lg p-3">
+                  暂无工地数据，请先在「工地管理」中添加工地
+                </p>
+              ) : (
+                <select
+                  value={siteId}
+                  onChange={(e) => setSiteId(e.target.value)}
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                >
+                  <option value="">请选择工地</option>
+                  {sites.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 rounded-lg transition">
+            取消
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving || (requireLoc && !siteId)}
+            className="px-5 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition disabled:opacity-50"
+          >
+            {saving ? '保存中...' : '保存'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function WorkersPage() {
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [pendingWorkers, setPendingWorkers] = useState<Worker[]>([]);
+  const [projectSites, setProjectSites] = useState<ProjectSite[]>([]);
   const [inviteCode, setInviteCode] = useState('');
   const [companyId, setCompanyId] = useState('');
   const [copied, setCopied] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Worker | null>(null);
+  const [attTarget, setAttTarget] = useState<Worker | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => { loadData(); }, []);
@@ -61,7 +194,7 @@ export default function WorkersPage() {
       setWorkers(data.workers ?? []);
       setPendingWorkers(data.pendingWorkers ?? []);
       setInviteCode(data.inviteCode ?? '');
-      // companyId is needed for refreshCode; fetch from company endpoint
+      setProjectSites(data.projectSites ?? []);
       const comp = await fetch('/api/company').then((r) => r.json());
       setCompanyId(comp.id ?? '');
     } catch (err) {
@@ -124,8 +257,36 @@ export default function WorkersPage() {
     setPendingWorkers((prev) => prev.filter((w) => w.id !== worker.id));
   }
 
+  async function handleSaveAttendance(workerId: string, attendance: Attendance) {
+    try {
+      await fetch(`/api/workers/${workerId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ attendance }),
+      });
+      setWorkers((prev) =>
+        prev.map((w) => (w.id === workerId ? { ...w, attendance } : w))
+      );
+    } catch (err) {
+      console.error('[workers] 保存考勤设置失败', err);
+      alert('保存失败，请重试');
+    }
+  }
+
   const totalAssigned  = workers.reduce((s, w) => s + w.assignedCards, 0);
   const totalCompleted = workers.reduce((s, w) => s + w.completedCards, 0);
+
+  function attSummary(w: Worker) {
+    if (!w.attendance) return null;
+    const a = w.attendance;
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-gray-400">
+        <Clock size={11} />
+        {a.clockInTime}-{a.clockOutTime}
+        {a.requireLocation && <MapPin size={11} className="text-blue-500 ml-0.5" />}
+      </span>
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -204,7 +365,7 @@ export default function WorkersPage() {
           <table className="w-full text-left">
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50/60">
-                {['工人', '加入时间', '已分配闪卡', '已完成', '操作'].map((h) => (
+                {['工人', '考勤规则', '已分配闪卡', '已完成', '操作'].map((h) => (
                   <th key={h} className="px-5 py-3 text-xs font-semibold text-gray-400 uppercase tracking-wide">{h}</th>
                 ))}
               </tr>
@@ -217,10 +378,30 @@ export default function WorkersPage() {
                     <td className="px-5 py-3.5">
                       <div className="flex items-center gap-3">
                         <Avatar name={w.name} avatarUrl={w.avatarUrl} />
-                        <span className="text-sm font-semibold text-gray-800">{w.name}</span>
+                        <div>
+                          <span className="text-sm font-semibold text-gray-800 block">{w.name}</span>
+                          <span className="text-xs text-gray-400">{w.joinedAt}</span>
+                        </div>
                       </div>
                     </td>
-                    <td className="px-5 py-3.5 text-sm text-gray-500">{w.joinedAt}</td>
+                    <td className="px-5 py-3.5">
+                      {w.attendance ? (
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-1.5">
+                            <Clock size={12} className="text-gray-400" />
+                            <span className="text-sm text-gray-700">{w.attendance.clockInTime} - {w.attendance.clockOutTime}</span>
+                          </div>
+                          {w.attendance.requireLocation && (
+                            <div className="flex items-center gap-1.5">
+                              <MapPin size={12} className="text-blue-500" />
+                              <span className="text-xs text-blue-600">需定位打卡</span>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-300">未设置</span>
+                      )}
+                    </td>
                     <td className="px-5 py-3.5">
                       <span className="text-sm font-medium text-gray-800">{w.assignedCards}</span>
                       <span className="text-xs text-gray-400 ml-1">张</span>
@@ -234,10 +415,18 @@ export default function WorkersPage() {
                       </div>
                     </td>
                     <td className="px-5 py-3.5">
-                      <button onClick={() => setDeleteTarget(w)}
-                        className="opacity-0 group-hover:opacity-100 flex items-center gap-1 h-7 px-2.5 rounded-lg text-xs font-medium text-red-500 hover:bg-red-50 transition">
-                        <Trash2 size={12} /> 移除
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => setAttTarget(w)}
+                          className="flex items-center gap-1 h-7 px-2.5 rounded-lg text-xs font-medium text-blue-600 hover:bg-blue-50 transition"
+                        >
+                          <Clock size={12} /> 考勤
+                        </button>
+                        <button onClick={() => setDeleteTarget(w)}
+                          className="opacity-0 group-hover:opacity-100 flex items-center gap-1 h-7 px-2.5 rounded-lg text-xs font-medium text-red-500 hover:bg-red-50 transition">
+                          <Trash2 size={12} /> 移除
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -249,6 +438,15 @@ export default function WorkersPage() {
 
       {deleteTarget && (
         <DeleteConfirm name={deleteTarget.name} onConfirm={handleRemove} onClose={() => setDeleteTarget(null)} />
+      )}
+
+      {attTarget && (
+        <AttendanceModal
+          worker={attTarget}
+          sites={projectSites}
+          onSave={handleSaveAttendance}
+          onClose={() => setAttTarget(null)}
+        />
       )}
     </div>
   );

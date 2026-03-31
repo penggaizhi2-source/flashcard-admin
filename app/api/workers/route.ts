@@ -21,6 +21,13 @@ export async function GET() {
 
     const assignments: any[] = (assignRes as any).data ?? [];
 
+    // 查工地列表供考勤设置使用
+    let projectSites: any[] = [];
+    try {
+      const sitesRes = await db.collection('projectSites').where({ companyId, status: 'active' }).limit(50).get();
+      projectSites = (sitesRes.data ?? []).map((s: any) => ({ id: s._id, name: s.name }));
+    } catch { /* 集合不存在 */ }
+
     const allWorkers = (workerRes.data ?? []).map((w: any) => {
       const workerAssigns = assignments.filter((a) => a.workerId === w._id);
       return {
@@ -31,13 +38,14 @@ export async function GET() {
         assignedCards: workerAssigns.length,
         completedCards: workerAssigns.filter((a) => a.status === 'completed').length,
         status: w.status ?? 'active',
+        attendance: w.attendance ?? null,
       };
     });
 
     const workers = allWorkers.filter((w: any) => w.status === 'active');
     const pendingWorkers = allWorkers.filter((w: any) => w.status === 'pending');
 
-    return NextResponse.json({ workers, pendingWorkers, inviteCode: company.inviteCode ?? '' });
+    return NextResponse.json({ workers, pendingWorkers, inviteCode: company.inviteCode ?? '', projectSites });
   } catch (err) {
     console.error('[api/workers GET]', err);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
