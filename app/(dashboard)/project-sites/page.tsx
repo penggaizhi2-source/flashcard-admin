@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { MapPin, Plus, Pencil, Trash2, X } from 'lucide-react';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { MapPin, Plus, Pencil, Trash2, X, Search } from 'lucide-react';
+import 'leaflet/dist/leaflet.css';
 
 type ProjectSite = {
   id: string;
@@ -29,6 +30,310 @@ const EMPTY_FORM: FormData = {
   longitude: '',
   radius: '500',
 };
+
+function SiteModal({
+  editingId,
+  form,
+  setForm,
+  saving,
+  onSave,
+  onClose,
+}: {
+  editingId: string | null;
+  form: FormData;
+  setForm: (f: FormData) => void;
+  saving: boolean;
+  onSave: () => void;
+  onClose: () => void;
+}) {
+  const mapRef = useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mapInstanceRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const markerRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const leafletRef = useRef<any>(null);
+  const formRef = useRef(form);
+  formRef.current = form;
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [searchResults, setSearchResults] = useState<Array<{ display_name: string; lat: string; lon: string }>>([]);
+
+  const updateMarker = useCallback(
+    (lat: number, lng: number) => {
+      const map = mapInstanceRef.current;
+      const L = leafletRef.current;
+      if (!map || !L) return;
+      if (markerRef.current) {
+        markerRef.current.setLatLng([lat, lng]);
+      } else {
+        markerRef.current = L.marker([lat, lng]).addTo(map);
+      }
+      map.setView([lat, lng], Math.max(map.getZoom(), 15));
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!mapRef.current || mapInstanceRef.current) return;
+    let cancelled = false;
+
+    (async () => {
+      const L = await import('leaflet');
+
+      // Fix default marker icon paths
+      delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
+      L.Icon.Default.mergeOptions({
+        iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+        iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+        shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+      });
+
+      if (cancelled || !mapRef.current) return;
+      leafletRef.current = L;
+
+      const initLat = parseFloat(formRef.current.latitude) || 23.13;
+      const initLng = parseFloat(formRef.current.longitude) || 113.26;
+      const initZoom = formRef.current.latitude && formRef.current.longitude ? 15 : 5;
+
+      const map = L.map(mapRef.current).setView([initLat, initLng], initZoom);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap',
+        maxZoom: 19,
+      }).addTo(map);
+
+      if (formRef.current.latitude && formRef.current.longitude) {
+        markerRef.current = L.marker([initLat, initLng]).addTo(map);
+      }
+
+      map.on('click', (e: { latlng: { lat: number; lng: number } }) => {
+        const { lat, lng } = e.latlng;
+        if (markerRef.current) {
+          markerRef.current.setLatLng([lat, lng]);
+        } else {
+          markerRef.current = L.marker([lat, lng]).addTo(map);
+        }
+        setForm({
+          ...formRef.current,
+          latitude: lat.toFixed(6),
+          longitude: lng.toFixed(6),
+        });
+        // Reverse geocode to fill address
+        fetch(
+          `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=zh`
+        )
+          .then((r) => r.json())
+          .then((data) => {
+            if (data.display_name) {
+              setForm({ ...formRef.current, address: data.display_name });
+            }
+          })
+          .catch(() => {});
+      });
+
+      mapInstanceRef.current = map;
+    })();
+
+    return () => {
+      cancelled = true;
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+        markerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleSearch() {
+    if (!searchQuery.trim()) return;
+    setSearching(true);
+    setSearchResults([]);
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
+          searchQuery
+        )}&format=json&limit=5&accept-language=zh`
+      );
+      const data = await res.json();
+      setSearchResults(data);
+      if (data.length > 0) {
+        const first = data[0];
+        const lat = parseFloat(first.lat);
+        const lng = parseFloat(first.lon);
+        setForm({ ...form, latitude: lat.toFixed(6), longitude: lng.toFixed(6), address: first.display_name });
+        updateMarker(lat, lng);
+      }
+    } catch {
+      console.error('搜索失败');
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  function selectResult(result: { display_name: string; lat: string; lon: string }) {
+    const lat = parseFloat(result.lat);
+    const lng = parseFloat(result.lon);
+    setForm({ ...form, latitude: lat.toFixed(6), longitude: lng.toFixed(6), address: result.display_name });
+    updateMarker(lat, lng);
+    setSearchResults([]);
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <h2 className="font-bold text-gray-800">
+            {editingId ? '编辑工地' : '添加工地'}
+          </h2>
+          <button
+            onClick={onClose}
+            className="p-1 text-gray-400 hover:text-gray-600"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="px-6 py-5 space-y-4">
+          {/* 地图搜索 */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              搜索位置
+            </label>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                  className="w-full px-3 py-2 pl-9 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="输入地址搜索，如：广州市天河区..."
+                />
+                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              </div>
+              <button
+                onClick={handleSearch}
+                disabled={searching}
+                className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition disabled:opacity-50 shrink-0"
+              >
+                {searching ? '搜索中...' : '搜索'}
+              </button>
+            </div>
+            {/* 搜索结果列表 */}
+            {searchResults.length > 1 && (
+              <div className="mt-2 border border-gray-200 rounded-lg overflow-hidden">
+                {searchResults.map((r, i) => (
+                  <button
+                    key={i}
+                    onClick={() => selectResult(r)}
+                    className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-blue-50 border-b border-gray-100 last:border-b-0 transition"
+                  >
+                    {r.display_name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 地图 */}
+          <div
+            ref={mapRef}
+            className="w-full h-64 rounded-lg border border-gray-200 z-0"
+          />
+          <p className="text-xs text-gray-400 -mt-2">
+            点击地图可直接选取坐标，也可搜索地址后自动定位
+          </p>
+
+          {/* 表单 */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              工地名称 *
+            </label>
+            <input
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="如：碧桂园中央半岛3期"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              地址
+            </label>
+            <input
+              value={form.address}
+              onChange={(e) => setForm({ ...form, address: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="搜索或点击地图后自动填入"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                纬度 *
+              </label>
+              <input
+                value={form.latitude}
+                onChange={(e) => setForm({ ...form, latitude: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-gray-50"
+                placeholder="点击地图选取"
+                type="number"
+                step="any"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                经度 *
+              </label>
+              <input
+                value={form.longitude}
+                onChange={(e) => setForm({ ...form, longitude: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-gray-50"
+                placeholder="点击地图选取"
+                type="number"
+                step="any"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              围栏半径（米）
+            </label>
+            <input
+              value={form.radius}
+              onChange={(e) => setForm({ ...form, radius: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="默认 500"
+              type="number"
+            />
+            <p className="text-xs text-gray-400 mt-1">
+              工人在此半径内才能打卡和使用关联闪卡，建议 300-1000 米
+            </p>
+          </div>
+        </div>
+
+        <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 rounded-lg transition"
+          >
+            取消
+          </button>
+          <button
+            onClick={onSave}
+            disabled={saving}
+            className="px-5 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition disabled:opacity-50"
+          >
+            {saving ? '保存中...' : '保存'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function ProjectSitesPage() {
   const [sites, setSites] = useState<ProjectSite[]>([]);
@@ -217,117 +522,14 @@ export default function ProjectSitesPage() {
 
       {/* 新建/编辑弹窗 */}
       {showModal && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl w-full max-w-md shadow-xl">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-              <h2 className="font-bold text-gray-800">
-                {editingId ? '编辑工地' : '添加工地'}
-              </h2>
-              <button
-                onClick={() => setShowModal(false)}
-                className="p-1 text-gray-400 hover:text-gray-600"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="px-6 py-5 space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  工地名称 *
-                </label>
-                <input
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="如：碧桂园中央半岛3期"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  地址
-                </label>
-                <input
-                  value={form.address}
-                  onChange={(e) => setForm({ ...form, address: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="选填，方便工人识别"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    纬度 *
-                  </label>
-                  <input
-                    value={form.latitude}
-                    onChange={(e) => setForm({ ...form, latitude: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="如 23.1291"
-                    type="number"
-                    step="any"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    经度 *
-                  </label>
-                  <input
-                    value={form.longitude}
-                    onChange={(e) => setForm({ ...form, longitude: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="如 113.2644"
-                    type="number"
-                    step="any"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  围栏半径（米）
-                </label>
-                <input
-                  value={form.radius}
-                  onChange={(e) => setForm({ ...form, radius: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="默认 500"
-                  type="number"
-                />
-                <p className="text-xs text-gray-400 mt-1">
-                  工人在此半径内才能打卡和使用关联闪卡，建议 300-1000 米
-                </p>
-              </div>
-
-              <div className="bg-blue-50 rounded-lg p-3">
-                <p className="text-xs text-blue-700">
-                  <strong>如何获取经纬度？</strong>
-                  <br />
-                  打开高德地图或腾讯地图，搜索工地位置，右键点击"这是哪儿"即可看到坐标。
-                  注意使用 GCJ-02 坐标系（高德/腾讯地图默认）。
-                </p>
-              </div>
-            </div>
-
-            <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-2">
-              <button
-                onClick={() => setShowModal(false)}
-                className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-50 rounded-lg transition"
-              >
-                取消
-              </button>
-              <button
-                onClick={handleSave}
-                disabled={saving}
-                className="px-5 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition disabled:opacity-50"
-              >
-                {saving ? '保存中...' : '保存'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <SiteModal
+          editingId={editingId}
+          form={form}
+          setForm={setForm}
+          saving={saving}
+          onSave={handleSave}
+          onClose={() => setShowModal(false)}
+        />
       )}
     </div>
   );
