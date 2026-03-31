@@ -83,3 +83,28 @@ export async function batchGetTempURLs(fileIDs: string[]): Promise<Record<string
     return {};
   }
 }
+
+export async function deleteCloudBaseFiles(fileIDs: string[]) {
+  const unique = [...new Set(fileIDs.filter((f) => f?.startsWith('cloud://')))];
+  if (unique.length === 0) {
+    return { deletedCount: 0, failedFileIds: [] as string[] };
+  }
+
+  try {
+    const res = await getApp().deleteFile({ fileList: unique });
+    const failedFileIds = ((res as any).fileList ?? [])
+      .filter((item: any) => item?.code && item.code !== 'SUCCESS')
+      .map((item: any) => item.fileID)
+      .filter((item: unknown): item is string => typeof item === 'string' && item.startsWith('cloud://'));
+
+    return {
+      deletedCount: unique.length - failedFileIds.length,
+      failedFileIds,
+    };
+  } catch {
+    return {
+      deletedCount: 0,
+      failedFileIds: unique,
+    };
+  }
+}

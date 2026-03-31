@@ -8,6 +8,7 @@ import {
   HardHat,
   BookOpen,
   Camera,
+  MapPin,
   LogOut,
 } from 'lucide-react';
 
@@ -17,6 +18,7 @@ const NAV = [
   { href: '/workers',   label: '工人管理', icon: HardHat },
   { href: '/flashcards',label: '闪卡管理', icon: BookOpen },
   { href: '/records',   label: '留痕查看', icon: Camera },
+  { href: '/project-sites', label: '工地管理', icon: MapPin },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {

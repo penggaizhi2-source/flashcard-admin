@@ -8,6 +8,7 @@ type MediaType = (typeof MEDIA_TYPES)[number];
 type UploadErrorCode = 'UPLOAD_CONFIG_ERROR' | 'UPLOAD_TOO_LARGE' | 'UPLOAD_FAILED';
 
 export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 function normalizeMediaType(value: FormDataEntryValue | null): MediaType | null {
   if (typeof value !== 'string') return null;
@@ -61,6 +62,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return createUploadErrorResponse('文件上传失败，请稍后重试', 'UPLOAD_FAILED', 500);
+    const message = err instanceof Error ? err.message : String(err);
+    return createUploadErrorResponse(`上传失败: ${message}`, 'UPLOAD_FAILED', 500);
   }
 }
